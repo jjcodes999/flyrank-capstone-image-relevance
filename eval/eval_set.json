@@ -1,0 +1,28 @@
+{
+  "description": "Hand-labeled eval set. For each post, correct_images lists the images a human would accept as the post's image. An empty list means no image in the corpus fits, so the right answer is no_confident_match. The labels were written from the photos themselves (contact sheet), before any model output was seen.",
+  "posts": [
+    {"slug": "red-fox-behavior", "correct_images": ["fox_01.jpg", "fox_02.jpg", "fox_03.jpg", "fox_04.jpg", "fox_05.jpg"]},
+    {"slug": "vulpes-vulpes-field-notes", "correct_images": ["fox_01.jpg", "fox_02.jpg", "fox_03.jpg", "fox_04.jpg", "fox_05.jpg"], "note": "scientific name only; tests concept matching"},
+    {"slug": "gray-wolf-packs", "correct_images": ["wolf_01.jpg", "wolf_02.jpg", "wolf_03.jpg", "wolf_04.jpg"]},
+    {"slug": "canis-lupus-returns", "correct_images": ["wolf_01.jpg", "wolf_02.jpg", "wolf_03.jpg", "wolf_04.jpg"], "note": "scientific name only"},
+    {"slug": "urban-coyotes", "correct_images": ["coyote_01.jpg", "coyote_02.jpg", "coyote_03.jpg"]},
+    {"slug": "golden-retriever-care", "correct_images": ["dog_01.jpg"], "note": "only dog_01 is a golden retriever"},
+    {"slug": "deer-antlers", "correct_images": ["deer_01.jpg", "deer_02.jpg", "deer_03.jpg"]},
+    {"slug": "brown-bear-hibernation", "correct_images": ["bear_01.jpg", "bear_02.jpg", "bear_03.jpg"]},
+    {"slug": "volkswagen-beetle-history", "correct_images": ["car_01.jpg"], "note": "car_02 is a different sports car"},
+    {"slug": "bicycle-commuting", "correct_images": ["bicycle_01.jpg", "bicycle_02.jpg"]},
+    {"slug": "neapolitan-pizza", "correct_images": ["pizza_01.jpg", "pizza_02.jpg"]},
+    {"slug": "sushi-at-home", "correct_images": ["sushi_01.jpg", "sushi_02.jpg"]},
+    {"slug": "great-burgers", "correct_images": ["burger_01.jpg", "burger_02.jpg"]},
+    {"slug": "better-salads", "correct_images": ["salad_01.jpg", "salad_02.jpg"]},
+    {"slug": "steam-railways", "correct_images": ["train_01.jpg", "train_02.jpg"]},
+    {"slug": "motorcycle-touring", "correct_images": ["motorcycle_01.jpg", "motorcycle_02.jpg"]},
+    {"slug": "winter-mountain-hiking", "correct_images": ["mountain_01.jpg", "mountain_02.jpg"]},
+    {"slug": "tropical-beach-holiday", "correct_images": ["beach_01.jpg", "beach_02.jpg"]},
+    {"slug": "sahara-sand-dunes", "correct_images": ["desert_01.jpg", "desert_02.jpg"]},
+    {"slug": "waterfall-photography", "correct_images": ["waterfall_01.jpg", "waterfall_02.jpg"]},
+    {"slug": "pet-parrot-care", "correct_images": [], "note": "no parrot in the corpus"},
+    {"slug": "chocolate-cake", "correct_images": [], "note": "no cake in the corpus"},
+    {"slug": "learning-to-sail", "correct_images": [], "note": "no boat in the corpus"}
+  ]
+}
