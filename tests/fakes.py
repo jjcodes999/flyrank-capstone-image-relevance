@@ -27,7 +27,10 @@ class FakeClient:
     def embed(self, model: str, texts: list[str]) -> EmbedResult:
         self.embed_calls.append(texts)
         return EmbedResult(
-            vectors=[self.vectors.get(t, [1.0, 0.0, 0.0]) for t in texts], input_tokens=10, duration_ms=1, model=model
+            vectors=[self.vectors.get(t, [1.0] + [0.0] * 383) for t in texts],
+            input_tokens=10,
+            duration_ms=1,
+            model=model,
         )
 
 
