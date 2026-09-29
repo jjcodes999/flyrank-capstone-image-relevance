@@ -1,4 +1,4 @@
-"""Processing for one job item: an image (vision tags) or, later, a post."""
+"""Processing for one image job item: vision tags, then embeddings."""
 
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ from app.ai.ollama import AIClient
 from app.config import Settings
 from app.errors import NotFound
 from app.models import Image, ImageMetadata
+from app.repositories.embeddings import EmbeddingRepository
 from app.repositories.images import ImageRepository
 from app.services.costs import CallContext, CostTracker
+from app.services.embeddings import EmbeddingService, image_embedding_text
 from app.services.vision import PROMPT_VERSION, VisionService, review_reasons, sharpness
 
 
@@ -26,7 +28,9 @@ class ImagePipeline:
     def __init__(self, session: Session, client: AIClient, costs: CostTracker, settings: Settings) -> None:
         self.s = session
         self.images = ImageRepository(session)
+        self.embeddings = EmbeddingRepository(session)
         self.vision = VisionService(client, costs, settings)
+        self.embedder = EmbeddingService(client, costs, settings)
         self.settings = settings
 
     def is_current(self, image: Image) -> bool:
@@ -50,9 +54,25 @@ class ImagePipeline:
         data = path.read_bytes()
         image.sha256 = hashlib.sha256(data).hexdigest()
 
-        if not force and self.is_current(image):
-            return "skipped"
+        did_work = False
+        if force or not self.is_current(image):
+            self._tag(image, data, ctx)
+            # a vision call takes minutes on CPU: keep its result even if embedding fails,
+            # so a retry resumes at the embedding step instead of re-tagging
+            self.s.commit()
+            did_work = True
 
+        # needs_review images are embedded too, so they can still be inspected/force-checked
+        assert image.meta is not None
+        text = image_embedding_text(image.meta)
+        current = self.embeddings.get_image(image.id)
+        if force or current is None or current.text != text or current.model != self.settings.embed_model:
+            vec, subject_vec = self.embedder.embed_pair(text, image.meta.subject, ctx)
+            self.embeddings.upsert_image(tenant_id, image.id, self.settings.embed_model, text, vec, subject_vec)
+            did_work = True
+        return "done" if did_work else "skipped"
+
+    def _tag(self, image: Image, data: bytes, ctx: CallContext) -> None:
         img = PILImage.open(io.BytesIO(data))
         img.load()
         sharp = sharpness(img)
@@ -80,7 +100,6 @@ class ImagePipeline:
         self.images.save_metadata(image, meta, tag_rows)
         image.status = "needs_review" if reasons else "tagged"
         image.error = None
-        return "done"
 
     def mark_failed(self, tenant_id: int, image_id: int, error: str) -> None:
         image = self.images.get(tenant_id, image_id)
