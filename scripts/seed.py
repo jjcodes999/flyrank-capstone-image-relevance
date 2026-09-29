@@ -1,4 +1,4 @@
-"""Seed demo data: download images, register them, queue the batch job.
+"""Seed demo data: download images, register images and posts, queue the batch job.
 
 Usage (inside the api container):  python -m scripts.seed [--wait]
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -19,14 +20,16 @@ from PIL import Image as PILImage
 
 from app.config import get_settings
 from app.db import get_sessionmaker
-from app.models import Image
+from app.models import Image, Post
 from app.repositories.images import ImageRepository
 from app.repositories.jobs import JobRepository
+from app.repositories.posts import PostRepository
 from app.repositories.tenants import TenantRepository
 from app.services.jobs import JobService
 from scripts.download_images import download_corpus
 
 MANIFEST = "data/manifest.csv"
+POSTS = "data/posts.json"
 
 
 def register_images(session, tenant_id: int, images_dir: Path) -> tuple[int, int]:
@@ -56,6 +59,21 @@ def register_images(session, tenant_id: int, images_dir: Path) -> tuple[int, int
             else:
                 for k, v in fields.items():
                     setattr(image, k, v)
+                updated += 1
+    return added, updated
+
+
+def register_posts(session, tenant_id: int) -> tuple[int, int]:
+    repo = PostRepository(session)
+    added = updated = 0
+    with open(POSTS, encoding="utf-8") as f:
+        for row in json.load(f):
+            post = repo.get_by_slug(tenant_id, row["slug"])
+            if post is None:
+                repo.add(Post(tenant_id=tenant_id, slug=row["slug"], title=row["title"], body=row["body"]))
+                added += 1
+            elif (post.title, post.body) != (row["title"], row["body"]):
+                post.title, post.body = row["title"], row["body"]  # analysis is redone by the next job
                 updated += 1
     return added, updated
 
@@ -105,14 +123,16 @@ def main() -> int:
     sessions = get_sessionmaker()
     with sessions() as s:
         tenant = TenantRepository(s).get_or_create(tenant_slug, "Demo tenant")
-        print("2/3 registering images ...")
+        print("2/3 registering images and posts ...")
         added, updated = register_images(s, tenant.id, images_dir)
         print(f"  images: {added} added, {updated} already registered")
+        added, updated = register_posts(s, tenant.id)
+        print(f"  posts: {added} added, {updated} updated")
         s.commit()
         tenant_id = tenant.id
 
         print("3/3 queueing batch job ...")
-        job, created = JobService(s).create(tenant_id, "images", idempotency_key=seed_key(MANIFEST))
+        job, created = JobService(s).create(tenant_id, "ingest", idempotency_key=seed_key(MANIFEST, POSTS))
         print(f"  job {job.id} {'created' if created else 'already exists (idempotent re-run)'}: status={job.status}")
         job_id = job.id
 
