@@ -18,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -25,6 +26,8 @@ IMAGE_STATUSES = ("pending", "tagged", "needs_review", "failed")
 POST_STATUSES = ("pending", "ready", "failed")
 JOB_STATUSES = ("queued", "running", "succeeded", "failed")
 ITEM_STATUSES = ("queued", "running", "done", "skipped", "failed")
+REVIEW_STATUSES = ("pending", "approved", "rejected")
+EMBED_DIM = 384  # all-minilm; must match migration 0002
 
 
 def _in(col: str, values: tuple[str, ...]) -> str:
@@ -73,6 +76,7 @@ class Image(TimestampMixin, Base):
     error: Mapped[str | None] = mapped_column(Text)
 
     meta: Mapped["ImageMetadata | None"] = relationship(back_populates="image", uselist=False)
+    embedding: Mapped["ImageEmbedding | None"] = relationship(uselist=False, viewonly=True)
     tags: Mapped[list["ImageTag"]] = relationship(back_populates="image", cascade="all, delete-orphan")
 
 
@@ -138,7 +142,10 @@ class Post(TimestampMixin, Base):
     analysis_confidence: Mapped[float | None] = mapped_column(Float)
     analysis_model: Mapped[str | None] = mapped_column(String(100))
     analysis_prompt_version: Mapped[str | None] = mapped_column(String(20))
+    analysis_source_sha256: Mapped[str | None] = mapped_column(String(64))
     error: Mapped[str | None] = mapped_column(Text)
+
+    embedding: Mapped["PostEmbedding | None"] = relationship(uselist=False, viewonly=True)
 
 
 class Job(Base):
@@ -219,3 +226,57 @@ class CostRecord(Base):
     notional_cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 8))
     actual_cost_usd: Mapped[Decimal] = mapped_column(Numeric(14, 8), default=Decimal("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImageEmbedding(Base):
+    __tablename__ = "image_embeddings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    image_id: Mapped[int] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    model: Mapped[str] = mapped_column(String(100))
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
+    subject_embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PostEmbedding(Base):
+    __tablename__ = "post_embeddings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), unique=True)
+    model: Mapped[str] = mapped_column(String(100))
+    text: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
+    subject_embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Suggestion(TimestampMixin, Base):
+    """A guard verdict for one (post, image) pair, plus its human review status."""
+
+    __tablename__ = "suggestions"
+    __table_args__ = (
+        UniqueConstraint("post_id", "image_id", name="uq_suggestions_post_image"),
+        Index("ix_suggestions_post_rank", "post_id", "rank"),
+        Index("ix_suggestions_tenant_review", "tenant_id", "review_status"),
+        CheckConstraint(_in("decision", ("accepted", "rejected")), name="ck_suggestions_decision"),
+        CheckConstraint(_in("review_status", REVIEW_STATUSES), name="ck_suggestions_review_status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"))
+    image_id: Mapped[int] = mapped_column(ForeignKey("images.id", ondelete="CASCADE"))
+    rank: Mapped[int | None] = mapped_column(Integer)
+    similarity: Mapped[float] = mapped_column(Float)
+    decision: Mapped[str] = mapped_column(String(20))
+    reasons: Mapped[list[str]] = mapped_column(JSONB)
+    checks: Mapped[list[dict]] = mapped_column(JSONB)
+    explanation: Mapped[str] = mapped_column(Text)
+    guard_version: Mapped[str] = mapped_column(String(20))
+    review_status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+
+    post: Mapped[Post] = relationship()
+    image: Mapped[Image] = relationship()
