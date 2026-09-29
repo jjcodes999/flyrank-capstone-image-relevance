@@ -1,0 +1,31 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# data (images are downloaded by scripts/download_images.py, never committed)
+data/images/
+data/tmp/
+eval/results/
+
+# model files
+*.gguf
+*.safetensors
+*.bin
+models/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
