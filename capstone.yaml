@@ -1,0 +1,39 @@
+name: flyrank-capstone-image-relevance
+title: AI Image Understanding & Content Matching Engine
+stack: Python 3.12, FastAPI, Pydantic v2, PostgreSQL 16 + pgvector, Alembic, Ollama (qwen3-vl:4b, all-minilm)
+
+# prerequisites (see README): Docker, Ollama with `ollama pull qwen3-vl:4b` and `ollama pull all-minilm`,
+# and `cp .env.example .env`
+run: docker compose up -d --build
+seed: docker compose exec api python -m scripts.seed --wait
+test: docker compose exec api pytest -q
+eval: docker compose exec api python -m scripts.eval
+base_url: http://localhost:8000
+
+endpoints:
+  - {method: GET,  path: /health}
+  - {method: GET,  path: /images, note: "filters: status, needs_review, category"}
+  - {method: GET,  path: "/images/{id}"}
+  - {method: POST, path: /jobs, note: "start a batch job; optional Idempotency-Key header"}
+  - {method: GET,  path: "/jobs/{id}", note: "progress, status, failed items"}
+  - {method: GET,  path: /posts}
+  - {method: POST, path: /posts}
+  - {method: GET,  path: "/posts/{id}"}
+  - {method: GET,  path: "/posts/{id}/images", note: "ranked, explained suggestions or no_confident_match"}
+  - {method: POST, path: "/posts/{id}/check", note: "force-check one image, body {\"image_id\": N}"}
+  - {method: GET,  path: /suggestions}
+  - {method: GET,  path: "/suggestions/{id}", note: "inspect why"}
+  - {method: POST, path: "/suggestions/{id}/approve"}
+  - {method: POST, path: "/suggestions/{id}/reject"}
+  - {method: GET,  path: /review, note: "HTML review table"}
+  - {method: GET,  path: /costs, note: "cost summary + budget"}
+  - {method: GET,  path: /costs/records, note: "one row per AI call"}
+
+# after seeding, ids are stable because the seed inserts in manifest / posts.json order
+probes:
+  1_batch_tags_and_flags: "GET /jobs/{seed job id}; GET /images?needs_review=true"
+  2_red_fox_ranking: "GET /posts/1/images   (post 1 = red-fox-behavior)"
+  3_force_wolf_on_fox: "POST /posts/1/check  {\"image_id\": 6}   (image 6 = wolf_01.jpg)"
+  4_no_confident_match: "GET /posts/21/images   (post 21 = pet-parrot-care)"
+  5_eval_precision: "docker compose exec api python -m scripts.eval"
+  6_cost_log: "GET /costs; GET /costs/records"
