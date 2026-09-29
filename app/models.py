@@ -280,3 +280,23 @@ class Suggestion(TimestampMixin, Base):
 
     post: Mapped[Post] = relationship()
     image: Mapped[Image] = relationship()
+
+
+class Review(Base):
+    """One human decision on a suggestion. Repeating the same decision adds no row."""
+
+    __tablename__ = "reviews"
+    __table_args__ = (
+        Index("ix_reviews_suggestion", "suggestion_id"),
+        Index("ix_reviews_tenant_created", "tenant_id", "created_at"),
+        CheckConstraint(_in("action", ("approve", "reject")), name="ck_reviews_action"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    suggestion_id: Mapped[int] = mapped_column(ForeignKey("suggestions.id", ondelete="CASCADE"))
+    action: Mapped[str] = mapped_column(String(10))
+    reviewer: Mapped[str] = mapped_column(String(100))
+    note: Mapped[str | None] = mapped_column(Text)
+    guard_decision: Mapped[str] = mapped_column(String(20))  # what the guard said at review time
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
