@@ -112,3 +112,16 @@ review and own every line. Entries are short and honest, including the AI's mist
   - Crash recovery and graceful shutdown were exercised on the real run, not only in
     tests: `requeued stale jobs [1] (worker heartbeat lost)` after a kill, and
     `job 1 requeued for shutdown; 4 item(s) already processed` after a normal stop.
+  - **An outage I did not cause, and what it taught me.** Hours into the batch, the API
+    started returning 500s: `failed to resolve host 'db'`. Docker's event log showed our
+    `db` container was destroyed at 13:58 UTC and replaced by a `postgres:16-alpine`
+    container from a *different* copy of this capstone on the same machine
+    (`Desktop\Capstone\flyrank-capstone-image-relevance`). Compose names a project after
+    its folder, so every copy with this folder name shared one project and could replace
+    each other's containers. Fixes: a unique `name: flyrank-imagematch` in
+    `docker-compose.yml`; the data volume copied into the renamed project (the foreign
+    container used its own volume, so no data was lost; job 1 = 48/48 and job 2's
+    progress survived); and a database outage now returns a clean `503` with
+    `Retry-After` instead of a 500 (test added). I deliberately did not run
+    `docker compose down` under the old name, because that would also have removed the
+    other projects' containers.

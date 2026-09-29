@@ -221,3 +221,29 @@ def test_job_idempotency_key_returns_the_same_job(client, world):
     assert first.status_code == 202 and again.status_code == 200
     assert first.json()["id"] == again.json()["id"]
     assert len(client.get("/jobs").json()) == 1
+
+
+def test_database_outage_is_a_clean_503_not_a_500(monkeypatch):
+    """Seen for real when another compose project replaced our db container."""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import db as app_db
+    from app.main import create_app
+
+    dead = sessionmaker(bind=create_engine("postgresql+psycopg://u:p@127.0.0.1:1/none", connect_args={"connect_timeout": 1}))
+
+    def override_db():
+        s = dead()
+        try:
+            yield s
+        finally:
+            s.close()
+
+    app = create_app()
+    app.dependency_overrides[app_db.get_db] = override_db
+    with TestClient(app, raise_server_exceptions=False) as c:
+        r = c.get("/images")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "database_unavailable"

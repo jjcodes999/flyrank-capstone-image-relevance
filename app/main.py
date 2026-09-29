@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.ai.ollama import OllamaClient
@@ -55,6 +55,16 @@ def create_app() -> FastAPI:
     async def integrity_error(_: Request, exc: IntegrityError) -> JSONResponse:
         log.warning("integrity error: %s", exc.orig)
         return JSONResponse(status_code=409, content=error_body("conflict", "the request conflicts with existing data"))
+
+    @app.exception_handler(OperationalError)
+    async def database_unavailable(_: Request, exc: OperationalError) -> JSONResponse:
+        # the database is down or unreachable: a clean, retryable 503 instead of a 500
+        log.error("database unavailable: %s", exc.orig.__class__.__name__ if exc.orig else exc)
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "5"},
+            content=error_body("database_unavailable", "the database is temporarily unavailable; retry shortly"),
+        )
 
     @app.exception_handler(Exception)
     async def unhandled(_: Request, exc: Exception) -> JSONResponse:

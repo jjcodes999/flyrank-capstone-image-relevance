@@ -1,3 +1,5 @@
+name: flyrank-imagematch  # unique project name: other copies of this capstone on the same machine share the folder name
+
 # One command: docker compose up -d --build
 # Ollama runs on the host (see README); containers reach it via host.docker.internal.
 x-app: &app
