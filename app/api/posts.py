@@ -7,7 +7,15 @@ from app.config import get_settings
 from app.errors import Conflict, NotFound
 from app.models import POST_STATUSES, Post
 from app.repositories.posts import PostRepository
-from app.schemas.api import CandidateOut, CheckOut, ForceCheckIn, MatchOut, PostCreate, PostCreated, PostOut
+from app.schemas.api import (
+    CandidateOut,
+    CheckOut,
+    ForceCheckIn,
+    MatchOut,
+    PostCreate,
+    PostCreated,
+    PostOut,
+)
 from app.services.jobs import JobService
 from app.services.matching import Candidate, MatchingService
 

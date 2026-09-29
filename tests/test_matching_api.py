@@ -10,7 +10,15 @@ import math
 
 import pytest
 
-from app.models import Image, ImageEmbedding, ImageMetadata, Post, PostEmbedding, Review, Tenant
+from app.models import (
+    Image,
+    ImageEmbedding,
+    ImageMetadata,
+    Post,
+    PostEmbedding,
+    Review,
+    Tenant,
+)
 
 DIM = 384
 

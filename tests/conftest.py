@@ -39,8 +39,9 @@ def db_url() -> str:
     finally:
         admin.dispose()
 
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
