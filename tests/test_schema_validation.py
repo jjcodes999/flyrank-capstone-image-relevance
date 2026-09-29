@@ -141,3 +141,16 @@ def test_sharpness_separates_sharp_and_blurred_images():
         draw.line([(x, 0), (x, 255)], fill="black", width=2)
     blurred = img.filter(ImageFilter.GaussianBlur(12))
     assert sharpness(img) > 15 > sharpness(blurred)
+
+
+def test_truncated_reply_is_reported_as_cut_off():
+    from app.ai.ollama import ChatResult
+
+    class CutOff(FakeClient):
+        def chat_json(self, model, messages, schema):
+            self.chat_calls.append(messages)
+            return ChatResult(content="", input_tokens=236, output_tokens=3860, duration_ms=1, model=model, truncated=True)
+
+    with pytest.raises(InvalidModelOutput) as exc:
+        run(CutOff(), FakeCosts(), retries=0)
+    assert "cut off at the context limit after 3860 tokens" in exc.value.errors[0]

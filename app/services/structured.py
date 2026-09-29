@@ -63,6 +63,8 @@ def call_structured(
             value = schema.model_validate_json(res.content)
         except ValidationError as exc:
             msg = summarize_validation_error(exc)
+            if res.truncated:
+                msg = f"reply cut off at the context limit after {res.output_tokens} tokens; {msg}"
             errors.append(msg)
             costs.record(
                 ctx,

@@ -28,7 +28,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handle_stop)
     signal.signal(signal.SIGINT, _handle_stop)
 
-    client = OllamaClient(settings.ollama_base_url, settings.ollama_timeout_s)
+    client = OllamaClient(settings.ollama_base_url, settings.ollama_timeout_s, settings.ollama_num_ctx)
     runner = JobRunner(get_sessionmaker(), client, settings, should_stop=lambda: _stop)
     log.info("worker started (vision=%s, embed=%s)", settings.vision_model, settings.embed_model)
     while not _stop:

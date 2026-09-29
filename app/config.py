@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     embed_model: str = "all-minilm"
     embed_dim: int = 384
     ollama_timeout_s: float = 900.0
+    ollama_num_ctx: int = 8192
     vision_max_side: int = 512
     vision_max_retries: int = 2  # extra attempts after an invalid (schema-failing) response
 

@@ -24,6 +24,7 @@ class ChatResult:
     output_tokens: int
     duration_ms: int
     model: str
+    truncated: bool = False  # generation stopped at the context limit (done_reason == "length")
 
 
 @dataclass(frozen=True)
@@ -43,8 +44,9 @@ class AIClient(Protocol):
 
 
 class OllamaClient:
-    def __init__(self, base_url: str, timeout_s: float) -> None:
+    def __init__(self, base_url: str, timeout_s: float, num_ctx: int = 8192) -> None:
         self._http = httpx.Client(base_url=base_url, timeout=timeout_s)
+        self._num_ctx = num_ctx
 
     def _post(self, path: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
         started = time.monotonic()
@@ -64,7 +66,9 @@ class OllamaClient:
             "format": schema,  # Ollama structured output: constrains decoding to this JSON schema
             "stream": False,
             "think": False,  # note: qwen3-vl:4b is a thinking checkpoint and ignores this flag
-            "options": {"temperature": 0},
+            # the hidden reasoning counts against the context window; Ollama's default of
+            # 4096 tokens was too small and cut replies off before any JSON was written
+            "options": {"temperature": 0, "num_ctx": self._num_ctx},
         }
         data, elapsed_ms = self._post("/api/chat", body)
         return ChatResult(
@@ -73,6 +77,7 @@ class OllamaClient:
             output_tokens=int(data.get("eval_count") or 0),
             duration_ms=elapsed_ms,
             model=model,
+            truncated=data.get("done_reason") == "length",
         )
 
     def embed(self, model: str, texts: list[str]) -> EmbedResult:
