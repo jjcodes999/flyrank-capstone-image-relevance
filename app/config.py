@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     job_max_attempts: int = 3
     job_backoff_base_s: float = 2.0
     job_poll_interval_s: float = 2.0
-    job_stale_after_s: float = 1800.0
+    # a running job whose heartbeat is older than this is assumed dead and requeued.
+    # One item can take ~10 min on CPU (3 vision attempts), so keep this well above that.
+    job_stale_after_s: float = 1200.0
 
     # cost tracking + budget guard. Local Ollama costs $0; the notional rates price each
     # call as if it went to a hosted API, so the budget guard has something to enforce.

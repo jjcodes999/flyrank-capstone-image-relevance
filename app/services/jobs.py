@@ -22,12 +22,14 @@ from app.errors import BudgetExceeded, InvalidModelOutput, NotFound
 from app.models import Job, JobItem
 from app.repositories.images import ImageRepository
 from app.repositories.jobs import JobRepository
+from app.repositories.posts import PostRepository
 from app.services.costs import CallContext, CostTracker
 from app.services.pipeline import ImagePipeline, PermanentItemError
+from app.services.posts import PostPipeline
 
 log = logging.getLogger(__name__)
 
-JOB_KINDS = ("images",)
+JOB_KINDS = ("ingest", "images", "posts")
 
 
 class JobService:
@@ -39,13 +41,23 @@ class JobService:
         targets: list[tuple[str, int]] = []
         if kind in ("images", "ingest"):
             targets += [("image", i) for i in ImageRepository(self.s).ids(tenant_id)]
+        if kind in ("posts", "ingest"):
+            targets += [("post", i) for i in PostRepository(self.s).ids(tenant_id)]
         return targets
 
     def create(
-        self, tenant_id: int, kind: str, *, idempotency_key: str | None = None, force: bool = False
+        self,
+        tenant_id: int,
+        kind: str,
+        *,
+        idempotency_key: str | None = None,
+        force: bool = False,
+        targets: list[tuple[str, int]] | None = None,
     ) -> tuple[Job, bool]:
         """Create a job, or return the existing one for the same idempotency key.
 
+        `targets` limits the job to specific items (e.g. one new post); by default the kind
+        decides (all images, all posts, or both for "ingest").
         Returns (job, created). The unique (tenant_id, idempotency_key) constraint makes this
         safe even when two identical requests race.
         """
@@ -55,7 +67,7 @@ class JobService:
                 return existing, False
         job = Job(tenant_id=tenant_id, kind=kind, idempotency_key=idempotency_key, force=force)
         try:
-            self.jobs.add(job, self._targets(tenant_id, kind))
+            self.jobs.add(job, targets if targets is not None else self._targets(tenant_id, kind))
             self.s.commit()
         except IntegrityError:
             self.s.rollback()
@@ -76,13 +88,15 @@ class JobRunner:
         client: AIClient,
         settings: Settings,
         sleep: Callable[[float], None] = time.sleep,
+        should_stop: Callable[[], bool] = lambda: False,
     ) -> None:
         self.sessions = session_factory
         self.client = client
         self.settings = settings
         self.costs = CostTracker(session_factory, settings)
         self.sleep = sleep
-        self.handlers: dict[str, ItemHandler] = {"image": self._handle_image}
+        self.should_stop = should_stop
+        self.handlers: dict[str, ItemHandler] = {"image": self._handle_image, "post": self._handle_post}
 
     # --- item handlers -------------------------------------------------------------
     def _handle_image(self, s: Session, job: Job, item: JobItem, ctx: CallContext) -> str:
@@ -90,9 +104,16 @@ class JobRunner:
             job.tenant_id, item.target_id, ctx, job.force
         )
 
+    def _handle_post(self, s: Session, job: Job, item: JobItem, ctx: CallContext) -> str:
+        return PostPipeline(s, self.client, self.costs, self.settings).process(
+            job.tenant_id, item.target_id, ctx, job.force
+        )
+
     def _mark_target_failed(self, s: Session, job: Job, item: JobItem, error: str) -> None:
         if item.target_type == "image":
             ImagePipeline(s, self.client, self.costs, self.settings).mark_failed(job.tenant_id, item.target_id, error)
+        else:
+            PostPipeline(s, self.client, self.costs, self.settings).mark_failed(job.tenant_id, item.target_id, error)
 
     # --- execution ------------------------------------------------------------------
     def run_once(self) -> bool:
@@ -118,6 +139,9 @@ class JobRunner:
 
         budget_error: str | None = None
         for item_id in item_ids:
+            if self.should_stop():
+                self._requeue(job_id)
+                return
             if budget_error:
                 self._fail_item(job_id, item_id, f"not attempted: {budget_error}")
                 continue
@@ -139,6 +163,7 @@ class JobRunner:
                 item.status = "running"
                 item.attempts += 1
                 attempt = item.attempts
+                job.heartbeat_at = datetime.now(timezone.utc)
                 s.commit()
 
                 ctx = CallContext(job.tenant_id, job.id, item.target_type, item.target_id)
@@ -173,6 +198,15 @@ class JobRunner:
                         it.last_error = error[:2000]
                         s2.commit()
             self.sleep(delay)
+
+    def _requeue(self, job_id: int) -> None:
+        """Graceful shutdown: hand the job back to the queue; finished items are kept."""
+        with self.sessions() as s:
+            job = s.get(Job, job_id)
+            assert job is not None
+            job.status = "queued"
+            s.commit()
+        log.info("job %s requeued for shutdown; %s item(s) already processed", job_id, job.processed)
 
     def _fail_item(self, job_id: int, item_id: int, error: str, mark_target: bool = False) -> None:
         with self.sessions() as s:

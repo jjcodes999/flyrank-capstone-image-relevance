@@ -75,12 +75,12 @@ class JobRepository:
         return ids
 
     def pending_items(self, job_id: int) -> list[JobItem]:
-        # posts after images is just a stable order; items are independent
+        # posts first: they are cheap (text only), so matching can start while images are tagged
         return list(
             self.s.scalars(
                 select(JobItem)
                 .where(JobItem.job_id == job_id, JobItem.status.in_(("queued", "running")))
-                .order_by(JobItem.target_type, JobItem.id)
+                .order_by(JobItem.target_type.desc(), JobItem.id)
             )
         )
 

@@ -19,7 +19,7 @@ _stop = False
 def _handle_stop(signum, _frame) -> None:  # noqa: ANN001
     global _stop
     _stop = True
-    log.info("signal %s received, stopping after the current item", signum)
+    log.info("signal %s received: finishing the current item, then requeueing the job", signum)
 
 
 def main() -> None:
@@ -29,7 +29,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _handle_stop)
 
     client = OllamaClient(settings.ollama_base_url, settings.ollama_timeout_s)
-    runner = JobRunner(get_sessionmaker(), client, settings)
+    runner = JobRunner(get_sessionmaker(), client, settings, should_stop=lambda: _stop)
     log.info("worker started (vision=%s, embed=%s)", settings.vision_model, settings.embed_model)
     while not _stop:
         try:
