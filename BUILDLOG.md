@@ -90,3 +90,25 @@ review and own every line. Entries are short and honest, including the AI's mist
   - `GET /posts/{id}/images` also stores its verdicts as suggestions (upsert, safe to
     repeat) so they can be reviewed. I accepted a GET with a side effect as the price of
     a simple review flow.
+
+## Phase 4 - Production layer (review API, eval, docs)
+
+- **AI generated:** migration 0003 (reviews), the review service and endpoints, the HTML
+  review table, `scripts/eval.py` (with the threshold sweep), `scripts/probes.py`, the
+  API/job integration tests, README, capstone.yaml and EVIDENCE.md.
+- **Where it was wrong (found by the real batch run, not by tests):**
+  - Post 7 ("deer antlers") came back **empty** after 652 s: 236 prompt + 3,860 hidden
+    reasoning tokens = 4,096, exactly Ollama's default context window, so the model
+    ran out of room before writing any JSON. The validator correctly refused it
+    (`Invalid JSON: EOF while parsing`) and recorded a failed cost row, but the retry
+    would have hit the same wall. Fix: `num_ctx=8192` (configurable), plus detecting
+    `done_reason == "length"` so the error says "cut off at the context limit" instead
+    of a confusing JSON error.
+  - Killing the worker mid-call to apply that fix exposed a gap: the interrupted call
+    left **no** cost row, because rows were written only after the reply. Now the row is
+    written before the call and completed after it, so a crash leaves an attributed row
+    marked "no reply recorded". There's a test that simulates exactly that.
+- **What I checked / decided:**
+  - Crash recovery and graceful shutdown were exercised on the real run, not only in
+    tests: `requeued stale jobs [1] (worker heartbeat lost)` after a kill, and
+    `job 1 requeued for shutdown; 4 item(s) already processed` after a normal stop.
