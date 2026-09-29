@@ -125,3 +125,12 @@ review and own every line. Entries are short and honest, including the AI's mist
     `Retry-After` instead of a 500 (test added). I deliberately did not run
     `docker compose down` under the old name, because that would also have removed the
     other projects' containers.
+  - Raising the context window had a side effect: with room to think, one post
+    ("sushi at home") reasoned past the 900 s HTTP timeout (`ReadTimeout`). The retry
+    logic handled it correctly, and the write-ahead cost rows showed both the timed-out
+    call and the in-flight retry. But the limit was simply too low for this model on my
+    CPU (it slowed to ~3-5 tokens/s). I raised it to 1,800 s. That exposed a second
+    rule the AI hadn't written down: the stale-job threshold must be larger than one
+    call's timeout, or a second worker could steal a job that is still alive. It's now
+    2,400 s, with a comment saying why. A stop request is also honoured between retry
+    attempts now, not only between items.
