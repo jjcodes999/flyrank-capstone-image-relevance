@@ -46,17 +46,11 @@ def apply_transform(img: Image.Image, transform: str) -> Image.Image:
     raise ValueError(f"unknown transform {transform!r}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", default="data/manifest.csv")
-    parser.add_argument("--out", default="data/images")
-    args = parser.parse_args()
-    # photographer names contain non-ASCII characters; Windows consoles default to cp1252
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-    out = Path(args.out)
+def download_corpus(manifest: str = "data/manifest.csv", out_dir: str = "data/images") -> int:
+    """Download every manifest row that is not on disk yet. Returns the number of failures."""
+    out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    with open(args.manifest, newline="", encoding="utf-8") as f:
+    with open(manifest, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     downloaded = skipped = failed = 0
@@ -78,7 +72,17 @@ def main() -> int:
             print(f"FAIL  {row['filename']}: {exc}", file=sys.stderr)
 
     print(f"done: {downloaded} downloaded, {skipped} already present, {failed} failed, {len(rows)} in manifest")
-    return 1 if failed else 0
+    return failed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", default="data/manifest.csv")
+    parser.add_argument("--out", default="data/images")
+    args = parser.parse_args()
+    # photographer names contain non-ASCII characters; Windows consoles default to cp1252
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    return 1 if download_corpus(args.manifest, args.out) else 0
 
 
 if __name__ == "__main__":
