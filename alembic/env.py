@@ -7,7 +7,8 @@ from app.config import get_settings
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # keep loggers created before migrations (tests run alembic in-process)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 def run_migrations_online() -> None:
