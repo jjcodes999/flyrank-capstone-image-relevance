@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     blur_threshold: float = 40.0
 
     # mismatch guard
-    similarity_threshold: float = 0.45
+    similarity_threshold: float = 0.50  # tuned on eval/eval_set.json (see README)
     subject_sim_threshold: float = 0.80
 
     # background jobs
