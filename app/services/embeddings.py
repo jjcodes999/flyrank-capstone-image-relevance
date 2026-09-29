@@ -32,21 +32,18 @@ class EmbeddingService:
     def embed_pair(self, text: str, subject: str, ctx: CallContext) -> tuple[list[float], list[float]]:
         model = self._settings.embed_model
         self._costs.check_budget(ctx)
+        cost_id = self._costs.begin(ctx, operation="embed", model=model)
         try:
             res = self._client.embed(model, [text, subject])
         except OllamaError as exc:
-            self._costs.record(ctx, operation="embed", model=model, success=False, error=str(exc))
+            self._costs.finish(cost_id, success=False, error=str(exc))
             raise
         bad = [len(v) for v in res.vectors if len(v) != self._settings.embed_dim]
         if bad:
             error = f"embedding has {bad[0]} dims, expected {self._settings.embed_dim}"
-            self._costs.record(
-                ctx, operation="embed", model=model, input_tokens=res.input_tokens,
-                duration_ms=res.duration_ms, success=False, error=error,
+            self._costs.finish(
+                cost_id, input_tokens=res.input_tokens, duration_ms=res.duration_ms, success=False, error=error
             )
             raise InvalidModelOutput([error])
-        self._costs.record(
-            ctx, operation="embed", model=model, input_tokens=res.input_tokens,
-            duration_ms=res.duration_ms, success=True,
-        )
+        self._costs.finish(cost_id, input_tokens=res.input_tokens, duration_ms=res.duration_ms, success=True)
         return res.vectors[0], res.vectors[1]

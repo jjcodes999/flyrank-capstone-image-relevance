@@ -54,10 +54,11 @@ def call_structured(
     convo = list(messages)
     for attempt in range(1, max_retries + 2):
         costs.check_budget(ctx)
+        cost_id = costs.begin(ctx, operation=operation, model=model, attempt=attempt)
         try:
             res = client.chat_json(model, convo, ollama_schema(schema))
         except OllamaError as exc:
-            costs.record(ctx, operation=operation, model=model, success=False, error=str(exc), attempt=attempt)
+            costs.finish(cost_id, success=False, error=str(exc))
             raise
         try:
             value = schema.model_validate_json(res.content)
@@ -66,16 +67,13 @@ def call_structured(
             if res.truncated:
                 msg = f"reply cut off at the context limit after {res.output_tokens} tokens; {msg}"
             errors.append(msg)
-            costs.record(
-                ctx,
-                operation=operation,
-                model=model,
+            costs.finish(
+                cost_id,
                 input_tokens=res.input_tokens,
                 output_tokens=res.output_tokens,
                 duration_ms=res.duration_ms,
                 success=False,
                 error=f"schema validation failed: {msg}",
-                attempt=attempt,
             )
             convo = convo + [
                 {"role": "assistant", "content": res.content},
@@ -86,15 +84,12 @@ def call_structured(
                 },
             ]
             continue
-        costs.record(
-            ctx,
-            operation=operation,
-            model=model,
+        costs.finish(
+            cost_id,
             input_tokens=res.input_tokens,
             output_tokens=res.output_tokens,
             duration_ms=res.duration_ms,
             success=True,
-            attempt=attempt,
         )
         return StructuredResult(value=value, raw=res.content, attempts=attempt)
     raise InvalidModelOutput(errors)

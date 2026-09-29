@@ -43,8 +43,12 @@ class FakeCosts:
         if self.budget_calls is not None and len(self.records) >= self.budget_calls:
             raise BudgetExceeded("test budget exhausted")
 
-    def record(self, ctx, **kw) -> None:  # noqa: ANN001
-        self.records.append(kw)
+    def begin(self, ctx, **kw) -> int:  # noqa: ANN001
+        self.records.append({**kw, "success": False, "error": "in progress"})
+        return len(self.records) - 1
+
+    def finish(self, row_id: int, **kw) -> None:
+        self.records[row_id].update({"error": None, **kw})
 
 
 __all__ = ["FakeClient", "FakeCosts", "OllamaError"]

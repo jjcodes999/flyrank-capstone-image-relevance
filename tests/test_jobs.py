@@ -140,3 +140,17 @@ def test_posts_are_analysed_and_embedded(sessions, setup):
         post = s.query(Post).one()
         assert (post.status, post.subject, post.category) == ("ready", "red fox", "animal")
         assert post.embedding is not None
+
+
+def test_a_call_that_never_returns_still_leaves_a_cost_row(sessions, setup):
+    """Write-ahead cost rows: simulate a worker killed in the middle of a model call."""
+    from app.services.costs import IN_PROGRESS, CallContext, CostTracker
+
+    tenant_id, settings = setup
+    tracker = CostTracker(sessions, settings)
+    tracker.begin(CallContext(tenant_id, None, "image", 1), operation="vision_tag", model="qwen3-vl:4b")
+    # ... the process dies here, finish() never runs ...
+    with sessions() as s:
+        row = s.query(CostRecord).one()
+        assert (row.operation, row.target_type, row.target_id, row.success) == ("vision_tag", "image", 1, False)
+        assert row.error == IN_PROGRESS
