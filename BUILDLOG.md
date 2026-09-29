@@ -134,3 +134,20 @@ review and own every line. Entries are short and honest, including the AI's mist
     call's timeout, or a second worker could steal a job that is still alive. It's now
     2,400 s, with a comment saying why. A stop request is also honoured between retry
     attempts now, not only between items.
+- **Eval and tuning (what I decided):**
+  - Result on the labeled set: top-1 precision **18/20 = 0.90**, 18/18 when the system
+    answers, 3/3 correct "no confident match". Both misses are refusals: post analysis
+    called the antlers post `stag antlers` / `object` and the hiking post `hiker` /
+    `person`, so the guard refused on category even though the right image ranked first.
+  - I chose **not** to rewrite the post prompt to fix those two. That would be tuning on
+    the test set, and re-analysing every post costs ~2 hours on this CPU. I documented it
+    as the main limitation instead.
+  - Threshold: the sweep is flat at 0.90 from 0.20 to 0.50, then drops. I took 0.50, the
+    highest value that keeps every correct match. The sweep also showed that similarity
+    alone is not enough: a fallow deer scores 0.557 on the Vulpes post, above the
+    weakest correct match (0.541). The subject and confidence checks do the real work.
+  - Evidence is real output from this machine, collected by scripts
+    (`scripts/probes.py`, `scripts/eval.py`) and curl. The clean-machine check was a
+    fresh `git clone` run with the README commands on different ports.
+  - The Compose collision was caused by me: I ran the other copy of the capstone at the
+    same time. Pinning the project name makes that harmless from now on.

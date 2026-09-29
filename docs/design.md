@@ -112,7 +112,7 @@ All rules are evaluated (not short-circuited) so the explanation lists every fai
 | 2 | confidence | `confidence < MIN_CONFIDENCE` or image flagged `needs_review` | "Low classification confidence 0.35 < 0.60; image is flagged for review" |
 | 3 | category | post category != image category | "Category mismatch: post is about food, image shows animal" |
 | 4 | subject | subjects don't match (see below) | "Animal category mismatch: expected red fox, detected gray wolf" |
-| 5 | similarity | cosine < `SIMILARITY_THRESHOLD` (*tuned*) | "Similarity 0.41 is below threshold 0.55" |
+| 5 | similarity | cosine < `SIMILARITY_THRESHOLD` (*tuned*: 0.50) | "Similarity 0.37 is below the threshold 0.50" |
 
 **Subject match** = same head noun ("red fox" / "fox"), or the post subject appears in
 the image's subject/caption/attributes, or cosine of the two subject embeddings is
