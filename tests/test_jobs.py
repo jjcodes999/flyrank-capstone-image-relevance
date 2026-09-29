@@ -154,3 +154,25 @@ def test_a_call_that_never_returns_still_leaves_a_cost_row(sessions, setup):
         row = s.query(CostRecord).one()
         assert (row.operation, row.target_type, row.target_id, row.success) == ("vision_tag", "image", 1, False)
         assert row.error == IN_PROGRESS
+
+
+def test_shutdown_during_a_retry_hands_the_job_back_to_the_queue(sessions, setup):
+    tenant_id, settings = setup
+    with sessions() as s:
+        job, _ = JobService(s).create(tenant_id, "images")
+    runner = JobRunner(sessions, FakeClient([OllamaError("timed out")]), settings, sleep=lambda _: None)
+    stopping = {"now": False}
+
+    def fail_then_stop(*a, **kw):
+        stopping["now"] = True  # SIGTERM arrives while the first attempt is failing
+        raise OllamaError("timed out")
+
+    runner.client.chat_json = fail_then_stop
+    runner.should_stop = lambda: stopping["now"]
+    runner.run_once()
+    with sessions() as s:
+        job = s.get(Job, job.id)
+        items = s.query(JobItem).order_by(JobItem.id).all()
+        assert job.status == "queued"  # another worker (or the restarted one) resumes it
+        assert (items[0].status, items[0].attempts) == ("queued", 1)
+        assert items[1].status == "queued" and items[1].attempts == 0

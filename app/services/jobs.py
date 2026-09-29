@@ -190,13 +190,16 @@ class JobRunner:
                         self._fail_item(job_id, item_id, error, mark_target=True)
                         return
                     delay = self.settings.job_backoff_base_s * 2 ** (attempt - 1)
-                    log.warning("job %s item %s failed, retrying in %.0fs: %s", job_id, item_id, delay, error)
                     with self.sessions() as s2:
                         it = s2.get(JobItem, item_id)
                         assert it is not None
                         it.status = "queued"
                         it.last_error = error[:2000]
                         s2.commit()
+                    if self.should_stop():  # shutting down: leave the retry to the next worker
+                        log.warning("job %s item %s failed (%s); not retrying during shutdown", job_id, item_id, error)
+                        return
+                    log.warning("job %s item %s failed, retrying in %.0fs: %s", job_id, item_id, delay, error)
             self.sleep(delay)
 
     def _requeue(self, job_id: int) -> None:

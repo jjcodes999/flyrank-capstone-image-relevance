@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     vision_model: str = "qwen3-vl:4b"
     embed_model: str = "all-minilm"
     embed_dim: int = 384
-    ollama_timeout_s: float = 900.0
+    # the thinking model can reason for 5,000+ tokens at ~4-6 tokens/s on CPU
+    ollama_timeout_s: float = 1800.0
     ollama_num_ctx: int = 8192
     vision_max_side: int = 512
     vision_max_retries: int = 2  # extra attempts after an invalid (schema-failing) response
@@ -45,8 +46,8 @@ class Settings(BaseSettings):
     job_backoff_base_s: float = 2.0
     job_poll_interval_s: float = 2.0
     # a running job whose heartbeat is older than this is assumed dead and requeued.
-    # One item can take ~10 min on CPU (3 vision attempts), so keep this well above that.
-    job_stale_after_s: float = 1200.0
+    # The heartbeat is refreshed at every attempt, so this must exceed ollama_timeout_s.
+    job_stale_after_s: float = 2400.0
 
     # cost tracking + budget guard. Local Ollama costs $0; the notional rates price each
     # call as if it went to a hosted API, so the budget guard has something to enforce.
