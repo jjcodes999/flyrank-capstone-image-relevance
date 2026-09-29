@@ -1,0 +1,94 @@
+"""Thin HTTP client for a local Ollama server.
+
+It only moves bytes: it returns the raw text plus token counts and timing, and never
+decides whether the output is valid. Validation lives in the services layer.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import httpx
+
+
+class OllamaError(Exception):
+    """Transport-level failure (connection refused, timeout, 5xx). Safe to retry."""
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    content: str
+    input_tokens: int
+    output_tokens: int
+    duration_ms: int
+    model: str
+
+
+@dataclass(frozen=True)
+class EmbedResult:
+    vectors: list[list[float]]
+    input_tokens: int
+    duration_ms: int
+    model: str
+
+
+class AIClient(Protocol):
+    def chat_json(
+        self, model: str, messages: list[dict[str, Any]], schema: dict[str, Any]
+    ) -> ChatResult: ...
+
+    def embed(self, model: str, texts: list[str]) -> EmbedResult: ...
+
+
+class OllamaClient:
+    def __init__(self, base_url: str, timeout_s: float) -> None:
+        self._http = httpx.Client(base_url=base_url, timeout=timeout_s)
+
+    def _post(self, path: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        started = time.monotonic()
+        try:
+            resp = self._http.post(path, json=body)
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"{type(exc).__name__}: {exc}") from exc
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if resp.status_code >= 400:
+            raise OllamaError(f"ollama {path} returned {resp.status_code}: {resp.text[:300]}")
+        return resp.json(), elapsed_ms
+
+    def chat_json(self, model: str, messages: list[dict[str, Any]], schema: dict[str, Any]) -> ChatResult:
+        body = {
+            "model": model,
+            "messages": messages,
+            "format": schema,  # Ollama structured output: constrains decoding to this JSON schema
+            "stream": False,
+            "think": False,  # note: qwen3-vl:4b is a thinking checkpoint and ignores this flag
+            "options": {"temperature": 0},
+        }
+        data, elapsed_ms = self._post("/api/chat", body)
+        return ChatResult(
+            content=data.get("message", {}).get("content", ""),
+            input_tokens=int(data.get("prompt_eval_count") or 0),
+            output_tokens=int(data.get("eval_count") or 0),
+            duration_ms=elapsed_ms,
+            model=model,
+        )
+
+    def embed(self, model: str, texts: list[str]) -> EmbedResult:
+        data, elapsed_ms = self._post("/api/embed", {"model": model, "input": texts})
+        vectors = data.get("embeddings") or []
+        if len(vectors) != len(texts):
+            raise OllamaError(f"expected {len(texts)} embeddings, got {len(vectors)}")
+        return EmbedResult(
+            vectors=vectors,
+            input_tokens=int(data.get("prompt_eval_count") or 0),
+            duration_ms=elapsed_ms,
+            model=model,
+        )
+
+    def ping(self) -> bool:
+        try:
+            return self._http.get("/api/tags", timeout=3).status_code == 200
+        except httpx.HTTPError:
+            return False
