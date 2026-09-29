@@ -139,7 +139,7 @@ def main() -> int:
     if args.wait:
         status = wait_for_job(tenant_id, job_id)
         return 0 if status == "succeeded" else 1
-    print(f"the worker is processing it; follow with: curl localhost:8000/jobs/{job_id}")
+    print(f"the worker is processing it; follow progress with GET /jobs/{job_id} or add --wait")
     return 0
 
 
