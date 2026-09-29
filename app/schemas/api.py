@@ -49,7 +49,7 @@ class ImageList(BaseModel):
 class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["images"] = "images"
+    kind: Literal["ingest", "images", "posts"] = "ingest"
     force: bool = Field(default=False, description="Re-process items even if their results are current")
 
 
@@ -121,3 +121,76 @@ class CostRecordOut(ORM):
     notional_cost_usd: Decimal
     actual_cost_usd: Decimal
     created_at: datetime
+
+
+# --- posts & matching -------------------------------------------------------------
+class PostCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,119}$", examples=["red-fox-behavior"])
+    title: str = Field(min_length=3, max_length=300)
+    body: str = Field(min_length=20, max_length=20000)
+
+
+class PostOut(ORM):
+    id: int
+    slug: str
+    title: str
+    body: str
+    status: str
+    subject: str | None
+    category: str | None
+    concepts: list[str] | None
+    summary: str | None
+    analysis_confidence: float | None
+    error: str | None
+
+
+class PostCreated(BaseModel):
+    post: PostOut
+    job_id: int
+
+
+class CheckOut(BaseModel):
+    name: str
+    passed: bool
+    detail: str
+    value: float | None = None
+    threshold: float | None = None
+
+
+class CandidateOut(BaseModel):
+    rank: int | None
+    suggestion_id: int
+    image_id: int
+    filename: str
+    subject: str | None
+    category: str | None
+    caption: str | None
+    confidence: float | None
+    needs_review: bool | None
+    similarity: float
+    subject_similarity: float | None
+    decision: Literal["accepted", "rejected"]
+    reasons: list[str]
+    explanation: str
+    checks: list[CheckOut]
+    review_status: str
+
+
+class MatchOut(BaseModel):
+    post_id: int
+    title: str
+    post_subject: str | None
+    post_category: str | None
+    status: Literal["match", "no_confident_match"]
+    suggestion: CandidateOut | None
+    reasons: list[str]
+    similarity_threshold: float
+    candidates: list[CandidateOut]
+
+
+class ForceCheckIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image_id: int = Field(ge=1)

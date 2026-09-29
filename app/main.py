@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.ai.ollama import OllamaClient
-from app.api import costs, images, jobs
+from app.api import costs, images, jobs, posts
 from app.api.deps import DB
 from app.config import get_settings
 from app.errors import AppError
@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
 
     app.include_router(images.router)
     app.include_router(jobs.router)
+    app.include_router(posts.router)
     app.include_router(costs.router)
     return app
 
