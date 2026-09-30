@@ -276,6 +276,9 @@ def test_a_pair_rejected_by_a_reviewer_is_not_suggested_again(client, world):
     again = client.get(f"/posts/{world['fox_post']}/images").json()
     assert again["status"] == "no_confident_match"
     assert any("rejected by a reviewer: fox.jpg" in r for r in again["reasons"])
+    # the explanation must not also claim that no image passed the guard
+    assert again["reasons"][0] == "None of the 4 closest images can be suggested"
+    assert not any("passed every guard check" in r for r in again["reasons"])
 
 
 def test_a_failed_image_is_never_recommended(client, world, sessions):

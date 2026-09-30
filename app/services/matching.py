@@ -134,8 +134,10 @@ class MatchingService:
         )
         vetoed = [c for c in candidates if c.verdict.accepted and c.suggestion.review_status == "rejected"]
         if vetoed:
+            # some candidates did pass the guard, so don't claim that none did
             names = ", ".join(c.image.filename for c in vetoed)
-            reasons = [r for r in reasons if not r.startswith("Every candidate failed")]
+            reasons = [r for r in reasons if not r.startswith(("None of the", "Every candidate failed"))]
+            reasons.insert(0, f"None of the {len(candidates)} closest images can be suggested")
             reasons.append(f"{len(vetoed)} candidate(s) passed the guard but were rejected by a reviewer: {names}")
         return MatchResult(post, "no_confident_match", None, reasons, candidates)
 
