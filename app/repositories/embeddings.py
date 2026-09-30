@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -45,19 +46,28 @@ class EmbeddingRepository:
 
     def rank_images(
         self, tenant_id: int, post_vec: list[float], post_subject_vec: list[float], limit: int,
-        image_id: int | None = None,
+        image_id: int | None = None, model: str | None = None, include_failed: bool = False,
     ) -> list[RankedRow]:
-        """Images closest to the post by cosine distance (served by the HNSW index)."""
+        """Images closest to the post by cosine distance (served by the HNSW index).
+
+        Only vectors from the post's embedding model are compared, and failed images are
+        left out unless explicitly force-checked. Non-finite scores are dropped.
+        """
         dist = ImageEmbedding.embedding.cosine_distance(post_vec)
         subject_dist = ImageEmbedding.subject_embedding.cosine_distance(post_subject_vec)
         q = (
             select(Image, (1 - dist).label("sim"), (1 - subject_dist).label("subject_sim"))
             .join(ImageEmbedding, ImageEmbedding.image_id == Image.id)
             .where(ImageEmbedding.tenant_id == tenant_id)
-            .options(selectinload(Image.meta))
+            .options(selectinload(Image.meta), selectinload(Image.embedding))
             .order_by(dist)
             .limit(limit)
         )
         if image_id is not None:
             q = q.where(Image.id == image_id)
-        return [RankedRow(img, float(sim), float(ssim)) for img, sim, ssim in self.s.execute(q)]
+        if model is not None:
+            q = q.where(ImageEmbedding.model == model)
+        if not include_failed:
+            q = q.where(Image.status != "failed")
+        rows = [RankedRow(img, float(sim), float(ssim)) for img, sim, ssim in self.s.execute(q)]
+        return [r for r in rows if math.isfinite(r.similarity) and math.isfinite(r.subject_similarity)]

@@ -13,6 +13,7 @@ from app.repositories.embeddings import EmbeddingRepository, RankedRow
 from app.repositories.images import ImageRepository
 from app.repositories.posts import PostRepository
 from app.repositories.suggestions import SuggestionRepository
+from app.services.embeddings import image_embedding_text
 from app.services.guard import (
     GUARD_VERSION,
     GuardConfig,
@@ -51,9 +52,12 @@ def guard_config(settings: Settings) -> GuardConfig:
     )
 
 
-def image_facts(image: Image, has_embedding: bool = True) -> ImageFacts:
-    m = image.meta
-    if m is None or not has_embedding:
+def image_facts(image: Image) -> ImageFacts:
+    """Guard input for an image. Not ready = never recommended: no tags, no embedding, a
+    failed (re)processing, or an embedding that no longer matches the current tags."""
+    m, emb = image.meta, image.embedding
+    current = m is not None and emb is not None and emb.text == image_embedding_text(m)
+    if not current or image.status == "failed":
         return ImageFacts(image_id=image.id, ready=False)
     return ImageFacts(
         image_id=image.id,
@@ -66,6 +70,10 @@ def image_facts(image: Image, has_embedding: bool = True) -> ImageFacts:
         needs_review=m.needs_review,
         review_reasons=tuple(m.review_reasons),
     )
+
+
+def post_facts(post: Post) -> PostFacts:
+    return PostFacts(post.subject, post.category, post.analysis_confidence)
 
 
 class MatchingService:
@@ -92,7 +100,7 @@ class MatchingService:
     def _judge(self, tenant_id: int, post: Post, row: RankedRow, rank: int | None) -> Candidate:
         facts = image_facts(row.image)
         scores = Scores(similarity=row.similarity, subject_similarity=row.subject_similarity)
-        verdict = evaluate(PostFacts(post.subject, post.category), facts, scores, self.cfg)
+        verdict = evaluate(post_facts(post), facts, scores, self.cfg)
         suggestion = self.suggestions.upsert(
             tenant_id, post.id, row.image.id,
             rank=rank,
@@ -107,19 +115,28 @@ class MatchingService:
 
     def suggest(self, tenant_id: int, post_id: int, limit: int = 10) -> MatchResult:
         post, emb = self._ready_post(tenant_id, post_id)
-        rows = self.embeddings.rank_images(tenant_id, list(emb.embedding), list(emb.subject_embedding), limit)
+        rows = self.embeddings.rank_images(
+            tenant_id, list(emb.embedding), list(emb.subject_embedding), limit, model=emb.model
+        )
         self.suggestions.clear_ranks(post.id)
         candidates = [self._judge(tenant_id, post, row, rank) for rank, row in enumerate(rows, start=1)]
         self.s.commit()
 
-        best = next((c for c in candidates if c.verdict.accepted), None)
-        if best is not None:
+        # a pair a human rejected is never suggested again (until the guard's verdict changes)
+        usable = [c for c in candidates if c.verdict.accepted and c.suggestion.review_status != "rejected"]
+        if usable:
+            best = usable[0]
             return MatchResult(post, "match", best, [best.verdict.explanation], candidates)
         reasons = no_match_reasons(
-            PostFacts(post.subject, post.category),
+            post_facts(post),
             [(image_facts(c.image), c.scores, c.verdict) for c in candidates],
             self.cfg,
         )
+        vetoed = [c for c in candidates if c.verdict.accepted and c.suggestion.review_status == "rejected"]
+        if vetoed:
+            names = ", ".join(c.image.filename for c in vetoed)
+            reasons = [r for r in reasons if not r.startswith("Every candidate failed")]
+            reasons.append(f"{len(vetoed)} candidate(s) passed the guard but were rejected by a reviewer: {names}")
         return MatchResult(post, "no_confident_match", None, reasons, candidates)
 
     def force_check(self, tenant_id: int, post_id: int, image_id: int) -> Candidate:
@@ -129,7 +146,8 @@ class MatchingService:
         if image is None:
             raise NotFound(f"image {image_id} not found")
         rows = self.embeddings.rank_images(
-            tenant_id, list(emb.embedding), list(emb.subject_embedding), limit=1, image_id=image_id
+            tenant_id, list(emb.embedding), list(emb.subject_embedding), limit=1, image_id=image_id,
+            model=emb.model, include_failed=True,
         )
         if not rows:
             raise NotReady(f"image {image_id} has not been analysed yet (status '{image.status}')")

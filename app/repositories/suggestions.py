@@ -64,6 +64,9 @@ class SuggestionRepository:
         if row is None:
             row = Suggestion(tenant_id=tenant_id, post_id=post_id, image_id=image_id)
             self.s.add(row)
+        elif (row.decision, row.guard_version) != (fields.get("decision"), fields.get("guard_version")):
+            # the guard now says something different: the old human review no longer applies
+            row.review_status = "pending"
         for k, v in fields.items():
             setattr(row, k, v)
         self.s.flush()

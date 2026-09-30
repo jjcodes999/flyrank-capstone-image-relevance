@@ -19,6 +19,7 @@ from app.models import (
     Review,
     Tenant,
 )
+from app.services.embeddings import image_embedding_text
 
 DIM = 384
 
@@ -51,13 +52,15 @@ def add_image(s, tenant, name, subject, category, direction, conf=0.95, needs_re
     img = Image(tenant_id=tenant.id, filename=name, sha256="x" * 64, width=10, height=10, status="tagged")
     s.add(img)
     s.flush()
-    s.add(ImageMetadata(
+    meta = ImageMetadata(
         image_id=img.id, subject=subject, category=category, attributes=["fur"],
         caption=f"A {subject} outdoors.", confidence=conf, needs_review=needs_review,
         review_reasons=list(reasons), sharpness=100.0, model="m", prompt_version="v1",
         source_sha256="x" * 64, raw_response="{}", validation_attempts=1,
-    ))
-    s.add(ImageEmbedding(image_id=img.id, tenant_id=tenant.id, model="e", text=subject,
+    )
+    s.add(meta)
+    # the embedding text must match the tags, or the image counts as stale (not ready)
+    s.add(ImageEmbedding(image_id=img.id, tenant_id=tenant.id, model="e", text=image_embedding_text(meta),
                          embedding=direction, subject_embedding=SUBJECT[subject]))
     return img
 
@@ -65,7 +68,7 @@ def add_image(s, tenant, name, subject, category, direction, conf=0.95, needs_re
 def add_post(s, tenant, slug, subject, category, direction, ready=True):
     post = Post(tenant_id=tenant.id, slug=slug, title=slug.replace("-", " "), body="body " * 10,
                 status="ready" if ready else "pending", subject=subject if ready else None,
-                category=category if ready else None)
+                category=category if ready else None, analysis_confidence=0.95 if ready else None)
     s.add(post)
     s.flush()
     if ready:
@@ -154,7 +157,7 @@ def test_inspect_shows_why(client, world):
     client.post(f"/suggestions/{wolf_sid}/reject", json={"note": "wrong animal"})
     detail = client.get(f"/suggestions/{wolf_sid}").json()
     assert detail["decision"] == "rejected" and detail["review_status"] == "rejected"
-    assert [c["name"] for c in detail["checks"]] == ["ready", "confidence", "category", "subject", "similarity"]
+    assert [c["name"] for c in detail["checks"]] == ["ready", "post", "confidence", "category", "subject", "similarity"]
     assert detail["image"]["meta"]["subject"] == "gray wolf"
     assert detail["reviews"][0]["note"] == "wrong animal"
     assert client.get("/review").status_code == 200
