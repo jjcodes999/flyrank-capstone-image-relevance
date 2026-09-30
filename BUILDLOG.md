@@ -155,3 +155,43 @@ checked them against the running system, and I stand behind their content.
     fresh `git clone` run with the README commands on different ports.
   - The Compose collision was caused by me: I ran the other copy of the capstone at the
     same time. Pinning the project name makes that harmless from now on.
+
+## After submission prep - external audit and fixes
+
+- **What happened:** before publishing, I had a second AI (ChatGPT) audit the project
+  read-only against the brief. It reproduced our numbers (83/83 tests, 0.90, 145 cost
+  rows) but found 17 real gaps where the code or the docs promised more than they
+  delivered. It wrote targeted counterexample tests; all of them reproduced.
+- **What was wrong (and is now fixed, each with a regression test):**
+  - The guard accepted an **arctic fox** on a red fox post (shared word "fox"), a lion
+    on a sea lion post, and a wolf whose caption said "not a red fox". Animals now need
+    a species-level match (same name or subject similarity >= 0.80) and captions are no
+    longer used for subject matching. The eval result stayed at 18/20 = 0.90.
+  - A stop during the **last** item's retry marked the job "succeeded" with work left
+    over (a bug introduced by my earlier shutdown fix). Jobs now never finish while items
+    are queued.
+  - Two inputs still returned **500** (a 101-digit offset, a NUL character in a title),
+    contradicting "never a 500". Offsets are capped and NUL is rejected: both 422 now.
+  - Blank captions ("     ") and `confidence: true` passed the schema. Now rejected.
+  - Post-analysis confidence was ignored; an uncertain post now gets "no confident match".
+  - Rejecting a suggestion didn't stop it being suggested again. Now it does.
+  - A post could be saved without its job; a failed or stale image could still be
+    recommended; a zero vector could crash matching; forced retries redid the vision
+    call; the seed couldn't resume half-finished work; `DATABASE_URL` wasn't masked;
+    passwords with `@` or `/` broke the connection URL. All fixed.
+  - The budget could overshoot by one call. It is now a hard cap: each call reserves its
+    worst case first, under a per-tenant lock.
+  - The probe script only printed results; now it asserts each probe and exits non-zero
+    on a failure. "Precision when answered" ignored wrong answers on no-match posts.
+- **What I only documented:** multi-worker runs (the code is written for them, but one
+  worker is all this CPU can use, so I didn't test several); head-noun matching outside
+  animals ("pizza"); the limited candidate pool for "no confident match".
+- **A correction to my own earlier entry:** I wrote that pinning the Compose project name
+  "makes that harmless from now on". The audit was right that this was too broad: it
+  protects against a *different* project in a same-named folder, but two checkouts of
+  this repo still share the name. The README now says to run a second copy with
+  `docker compose -p <other-name>`, and the clean-machine check was redone that way on
+  the final code (the earlier check predated several fixes).
+- **What I checked:** 128 tests pass in the container, all 6 probes pass as assertions,
+  eval unchanged at 0.90, and the live budget demo refuses a call when there is budget
+  left but less than one call's worst case.

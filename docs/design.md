@@ -28,13 +28,13 @@ Avoiding a wrong match matters more than always finding a match.
  POST /suggestions/{id}/approve|reject  --> review log                           suggestions
 ```
 
-Code layers (each layer only calls the one below it):
+Code layers (routes use services and repositories; queries live in repositories):
 
 | Layer | Package | Responsibility |
 |---|---|---|
-| HTTP | `app/api/` | FastAPI routes, request/response schemas, status codes. No SQL, no AI calls. |
+| HTTP | `app/api/` | FastAPI routes, request/response schemas, status codes. No SQL built here, no AI calls. |
 | Logic | `app/services/` | Vision pipeline, embeddings, matching, **guard**, jobs, costs/budget, review. |
-| Data | `app/repositories/` | All SQLAlchemy queries. Every query is scoped by `tenant_id`. |
+| Data | `app/repositories/` | The SQLAlchemy queries. Lookups reached from the API take a `tenant_id`; a few by-id helpers run only after a tenant-scoped check. Services still commit transactions and use `session.get()` for primary keys. |
 | AI client | `app/ai/` | Thin Ollama HTTP client. Returns text + token counts; knows nothing about schemas. |
 
 The guard (`app/services/guard.py`) is a pure function with no I/O, so it is unit-tested
@@ -57,8 +57,8 @@ on its own.
 | `subject` | 1-60 chars, most specific common name (species level for animals) |
 | `category` | enum: `animal, vehicle, food, nature, person, object, other` |
 | `attributes` | 1-10 short strings, each 1-40 chars |
-| `caption` | 5-300 chars, one sentence |
-| `confidence` | number in [0, 1] |
+| `caption` | 5-300 chars after trimming, one sentence |
+| `confidence` | a JSON number in [0, 1] (`true` or `"0.9"` are rejected, not coerced) |
 
 The same schema is sent to Ollama as the `format` JSON schema and enforced again with
 Pydantic `model_validate_json`. A response that fails validation is retried with the
@@ -72,6 +72,8 @@ images keep their tags for humans to inspect, but the guard never recommends the
 
 Post analysis uses the same approach: `{subject, category, concepts[], summary, confidence}`,
 where `subject` is the common English name (so "Vulpes vulpes" becomes "red fox").
+A post analysis below `MIN_CONFIDENCE`, or one that finds no visual subject, is not
+trusted: the guard refuses to pick an image for that post (added after the audit).
 
 ## 4. Data model (Postgres 16 + pgvector, Alembic migrations)
 
@@ -93,14 +95,17 @@ where `subject` is the common English name (so "Vulpes vulpes" becomes "red fox"
 ## 5. Matching strategy
 
 1. **Text for embedding.** Image: `subject. caption. attributes`. Post: the analysed
-   common-name `subject` + `summary` + title. Both go through `all-minilm` (384 dims)
+   common-name `subject` + `summary` + `concepts` (the title informs the analysis step,
+   not the embedding). Both go through `all-minilm` (384 dims)
    into one shared space. A quick test showed why post analysis is needed:
    `all-minilm` alone scores "Vulpes vulpes" vs "red fox" at 0.26, the same as vs
    "gray wolf".
 2. **Ranking.** Cosine similarity between post and image vectors (`<=>` on an HNSW
-   index), highest first.
+   index), highest first, over the closest `limit` images (default 10). Only vectors from
+   the same embedding model are compared; failed images are excluded.
 3. **Guard** on every ranked candidate. The suggestion is the highest-ranked candidate
-   the guard accepts; if none, the answer is `no_confident_match` plus the reasons.
+   the guard accepts and no reviewer has rejected; if none, the answer is
+   `no_confident_match` plus the reasons.
 
 ## 6. Guard rules
 
@@ -108,15 +113,22 @@ All rules are evaluated (not short-circuited) so the explanation lists every fai
 
 | # | Check | Rejects when | Example reason |
 |---|---|---|---|
-| 1 | ready | image has no valid metadata/embedding | "Image has not been analysed yet" |
-| 2 | confidence | `confidence < MIN_CONFIDENCE` or image flagged `needs_review` | "Low classification confidence 0.35 < 0.60; image is flagged for review" |
-| 3 | category | post category != image category | "Category mismatch: post is about food, image shows animal" |
-| 4 | subject | subjects don't match (see below) | "Animal category mismatch: expected red fox, detected gray wolf" |
-| 5 | similarity | cosine < `SIMILARITY_THRESHOLD` (*tuned*: 0.50) | "Similarity 0.37 is below the threshold 0.50" |
+| 1 | ready | image has no valid metadata/embedding, failed, or its embedding is stale | "Image has not been analysed yet" |
+| 2 | post | post analysis confidence < `MIN_CONFIDENCE`, or no visual subject | "Post analysis is uncertain (0.20 < 0.60); its subject needs review" |
+| 3 | confidence | `confidence < MIN_CONFIDENCE` or image flagged `needs_review` | "Low-confidence image (0.30): flagged for review (...)" |
+| 4 | category | post category != image category | "Category mismatch: post is about food, image shows animal" |
+| 5 | subject | subjects don't match (see below) | "Animal category mismatch: expected red fox, detected gray wolf" |
+| 6 | similarity | cosine < `SIMILARITY_THRESHOLD` (*tuned*: 0.50) | "Similarity 0.37 is below the threshold 0.50" |
 
-**Subject match** = same head noun ("red fox" / "fox"), or the post subject appears in
-the image's subject/caption/attributes, or cosine of the two subject embeddings is
-at least `SUBJECT_SIM_THRESHOLD`. "red fox" vs "gray wolf" fails all three.
+**Subject match** (as built after the audit). Animals: the same species name, or subject
+embeddings at least `SUBJECT_SIM_THRESHOLD` (0.80) similar; a shared word alone is not
+enough ("arctic fox" is not a "red fox"). Other categories: also the same head noun
+("margherita pizza" / "pizza") or the post subject among the image's subject/tags. The
+free-text caption is never used. "red fox" vs "gray wolf" fails every path.
+
+*Original plan:* head noun, or the subject phrase anywhere in subject/caption/attributes,
+or the embedding threshold. An external audit showed that let an arctic fox (same head
+noun) and a wolf whose caption said "not a red fox" through, so it was tightened.
 
 ## 7. Background jobs, cost, idempotency
 
@@ -130,14 +142,18 @@ at least `SUBJECT_SIM_THRESHOLD`. "red fox" vs "gray wolf" fails all three.
   image already has metadata from the same model + prompt version + file hash are
   `skipped` without an AI call (unless `force=true`).
 - Every vision / analysis / embedding call writes a `cost_records` row (tokens, latency,
-  success). Actual cost is $0 (local Ollama); a notional cost at configurable reference
-  rates feeds a **budget guard** that stops a job before it exceeds `AI_BUDGET_USD`.
+  success), created before the call and completed after it. Actual cost is $0 (local
+  Ollama); a notional cost at configurable reference rates feeds a **budget guard**. As
+  built, it is a hard cap: each call reserves its worst-case cost first and is refused
+  unless that still fits in `AI_BUDGET_USD` (check + reservation under a per-tenant lock).
+- A job never finishes while items are still queued; a re-run of the seed queues a
+  follow-up job for anything left pending or failed.
 
 ## 8. API surface (all JSON, tenant from `X-Tenant-ID`, default `demo`)
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | DB + Ollama reachability |
+| GET | `/health` | DB + Ollama reachability and both models pulled (`ok` / `degraded`) |
 | GET | `/images`, `/images/{id}` | list (filter `status`, `needs_review`, `category`) / detail with tags |
 | POST/GET | `/posts`, `/posts/{id}` | create (queues analysis job) / read |
 | GET | `/posts/{id}/images` | ranked, explained suggestions or `no_confident_match` |
@@ -148,12 +164,14 @@ at least `SUBJECT_SIM_THRESHOLD`. "red fox" vs "gray wolf" fails all three.
 | GET | `/costs`, `/costs/records` | cost summary + budget / per-call log |
 
 Bad input returns 4xx (422 validation, 404 unknown id/tenant, 409 conflict) with a JSON
-error body, never a 500.
+error body, never a 500. That includes values PostgreSQL can't take (huge offsets, NUL
+characters), which the first build missed; a database outage returns 503.
 
 ## 9. Non-goals
 
-- **No image upload or web UI.** Images come from the manifest + download script;
-  review is done through API endpoints. (A frontend is explicitly out of scope.)
+- **No image upload and no frontend app.** Images come from the manifest + download
+  script; review is done through API endpoints plus one plain server-rendered HTML table
+  (`/review`), which the brief allows.
 - Not comparing vision/embedding models; one of each.
 - No auth beyond tenant scoping; this is a single-team internal tool.
 

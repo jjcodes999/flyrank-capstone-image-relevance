@@ -17,21 +17,24 @@ Everything runs locally for **$0**: a vision model and an embedding model on
 
 1. **Understands images.** A background job sends every image to `qwen3-vl:4b` and gets
    `{subject, category, attributes, caption, confidence}` back. The reply is validated
-   against a Pydantic schema; invalid replies are retried with the error fed back and,
-   if still invalid, rejected (never stored). Low-confidence or blurry images are flagged
-   `needs_review` instead of trusted.
+   against a Pydantic schema (blank strings and non-numeric confidence included); invalid
+   replies are retried with the error fed back and, if still invalid, rejected (never
+   stored). Low-confidence or blurry images are flagged `needs_review` instead of trusted.
 2. **Understands posts.** The same model reads each post and names its subject in common
-   words, so "Vulpes vulpes" becomes "red fox".
+   words, so "Vulpes vulpes" becomes "red fox". An uncertain post analysis is not trusted
+   either: the guard refuses to pick an image for it.
 3. **Matches on meaning.** Image descriptions and post summaries are embedded with
    `all-minilm` into one vector space (pgvector, HNSW index) and ranked by cosine similarity.
 4. **Refuses bad matches.** Every candidate goes through the **mismatch guard**:
-   classification confidence, category, subject, and a similarity threshold tuned on the
-   eval set. Each rejection says why, e.g.
+   post-analysis confidence, image confidence, category, subject (species level for
+   animals), and a similarity threshold tuned on the eval set. Each rejection says why, e.g.
    `Animal category mismatch: expected red fox, detected gray wolf`.
 5. **Keeps humans in the loop.** Suggestions are stored and can be approved, rejected
-   and inspected through the review API (plus a plain HTML table at `/review`).
+   and inspected through the review API (plus a plain HTML table at `/review`). A pair a
+   reviewer rejected is not suggested again; the next acceptable image is used instead.
 6. **Tracks cost.** Every vision, analysis and embedding call writes a `cost_records`
-   row (tokens, latency, success). A budget guard stops a job before it goes over.
+   row (tokens, latency, success), written before the call so even a crash leaves one.
+   The budget is a hard cap: a call is refused unless its worst-case cost still fits.
 
 ## Architecture
 
@@ -53,13 +56,15 @@ Everything runs locally for **$0**: a vision model and an embedding model on
  POST /suggestions/{id}/approve|reject, GET /suggestions/{id} --> review log (reviews table)
 ```
 
-Code is layered; each layer only calls the one below it:
+Code is layered: routes call services and repositories, services hold the logic, and
+queries live in repositories. (Routes and services still open/commit transactions and
+use `session.get()` for primary-key lookups; they don't build SQL.)
 
 | Layer | Folder | What lives there |
 |---|---|---|
 | HTTP | `app/api/` | FastAPI routes, request validation, status codes |
 | Logic | `app/services/` | vision + post analysis, embeddings, **guard** (`guard.py`, pure functions), matching, jobs, costs, review |
-| Data | `app/repositories/` | every SQL query, all scoped by tenant |
+| Data | `app/repositories/` | the queries. List/lookup methods reached from the API take a `tenant_id`; a few by-id helpers (an embedding, a suggestion pair) are only called after a tenant-scoped check |
 | AI client | `app/ai/ollama.py` | thin HTTP client; returns text + token counts, never judges validity |
 | Schema | `alembic/versions/` | three migrations with the unique constraints and indexes |
 
@@ -104,15 +109,21 @@ docker compose exec api pytest -q                                    # test suit
 
 All requests use the `demo` tenant unless you send an `X-Tenant-ID` header.
 
-The Compose project is pinned to `name: flyrank-imagematch`, so other checkouts of a
-folder with the same name can't replace these containers (that happened during
-development; see BUILDLOG).
+**Running a second copy.** The Compose project is pinned to `name: flyrank-imagematch`,
+so a different project that happens to live in a folder with the same name can't replace
+these containers (that happened during development; see BUILDLOG). But every checkout of
+*this* repo has the same name, so to run two copies side by side give the second one its
+own project name and ports:
+
+```bash
+docker compose -p flyrank-copy2 up -d --build     # with DB_HOST_PORT / API_HOST_PORT changed in its .env
+```
 
 ## API
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | database and Ollama reachability |
+| GET | `/health` | `ok`, or `degraded` if Ollama is unreachable or a model isn't pulled |
 | GET | `/images`, `/images/{id}` | tags, confidence, review flags (filters: `status`, `needs_review`, `category`) |
 | POST | `/jobs` | queue a batch job (`ingest`, `images`, `posts`; `force`); `Idempotency-Key` header supported |
 | GET | `/jobs`, `/jobs/{id}` | progress, status, failed items with their last error |
@@ -126,9 +137,12 @@ development; see BUILDLOG).
 | GET | `/costs`, `/costs/records` | cost summary and budget / one row per AI call |
 
 Bad input gets a JSON error with a 4xx status (422 invalid input, 404 unknown id or
-tenant, 409 conflict or not ready yet), never a 500. If the database itself is down,
-the API answers 503 with `Retry-After`. This is covered by
-`tests/test_matching_api.py::test_bad_input_returns_clean_4xx` (19 cases).
+tenant, 409 conflict or not ready yet). That includes values PostgreSQL itself can't take:
+page offsets are capped at 100,000 and text with NUL characters is rejected. If the
+database itself is down, the API answers 503 with `Retry-After`. Covered by
+`test_bad_input_returns_clean_4xx` (19 cases) and `test_inputs_postgres_cannot_store_are_422_not_500`.
+A genuine server fault (say, the job queue failing mid-request) still returns 500; that
+isn't bad input, and the post-plus-job write is one transaction so nothing half-done is left.
 
 ## The mismatch guard
 
@@ -136,15 +150,27 @@ the API answers 503 with `Retry-After`. This is covered by
 
 | Check | Rejects when |
 |---|---|
-| ready | the image has no validated tags or embedding |
-| confidence | model confidence < 0.60, or the image is flagged `needs_review` |
+| ready | the image has no validated tags or embedding, its processing failed, or its embedding no longer matches its current tags |
+| post | the post analysis is uncertain (confidence < 0.60) or found no visual subject |
+| confidence | image confidence < 0.60, or the image is flagged `needs_review` |
 | category | post category != image category |
-| subject | the image doesn't show the post's subject: different head noun ("fox" vs "wolf"), subject phrase not in the image description, and subject embeddings below 0.80 |
+| subject | the image doesn't show the post's subject (below) |
 | similarity | cosine(post, image) < `SIMILARITY_THRESHOLD` (0.50, tuned on the eval set) |
 
-The 0.80 subject threshold comes from measured `all-minilm` scores: wrong-subject pairs
-top out at 0.68 (bicycle vs motorcycle), "red fox" vs "gray wolf" is 0.53, while true
-synonyms score 0.81-0.92 (bike, motorbike, burger, steam train).
+**Subject rule.** Animals are matched at species level: the names must be the same, or
+the subject embeddings must be at least 0.80 similar. A shared word is not enough, so
+"arctic fox" is not a "red fox" (0.73) and a "lion" is not a "sea lion". Other categories
+may also match on the head noun ("margherita pizza" fits a Neapolitan pizza post) or on
+the post subject appearing in the image's subject or tags. The free-text caption is never
+used, so a caption like "a gray wolf, not a red fox" can't smuggle a wolf in.
+
+The 0.80 threshold comes from measured `all-minilm` scores: wrong-subject pairs top out at
+0.73 (red fox vs arctic fox) and 0.68 (bicycle vs motorcycle), "red fox" vs "gray wolf" is
+0.53, while true synonyms score 0.81-0.92 (bike, motorbike, burger, steam train).
+
+The ranking judges the closest `limit` images (default 10, max 50), so "no confident
+match" means none of those passed. With 48 images and the scores above, anything further
+down scores well below the similarity threshold anyway.
 
 ## Evaluation
 
@@ -155,7 +181,7 @@ synonyms score 0.81-0.92 (bike, motorbike, burger, steam train).
 | Metric | Result |
 |---|---|
 | **Top-1 precision** (20 posts with a correct image) | **18/20 = 0.90** |
-| Precision when it answers | 18/18 = 1.00 |
+| Precision when it answers (every suggestion counts, including any on no-match posts) | 18/18 = 1.00 |
 | Correct "no confident match" (3 posts with no fitting image) | 3/3 |
 | Overall decision accuracy (23 posts) | 21/23 = 0.91 |
 | "Vulpes vulpes" post / "Canis lupus" post | fox / wolf, both correct |
@@ -176,11 +202,14 @@ every correct match. The weakest correct suggestion scores 0.541; nothing on the
 no-match posts scores above 0.28. Similarity alone can't separate right from wrong:
 a fallow deer scores 0.557 on the "Vulpes vulpes" post, above that weakest correct
 match. The subject and confidence checks are what stop it; the threshold is a safety floor.
+These numbers are unchanged after the stricter guard from the audit fixes (species-level
+animals, no caption matching, post-confidence check).
 
 ## Tests
 
 `docker compose exec api pytest -q` (or `pytest -q` from a venv with the stack running).
-83 tests (full `pytest -v` output is in EVIDENCE.md):
+128 tests (full `pytest -v` output is in EVIDENCE.md). The database tests skip, rather
+than fail, if Postgres isn't reachable, so check the summary says `128 passed`:
 
 - `tests/test_schema_validation.py`: schema accepts/rejects vision output, retry with
   the error fed back, invalid output never returned, budget guard, low-confidence flag,
@@ -191,13 +220,22 @@ match. The subject and confidence checks are what stop it; the threshold is a sa
   pgvector test database. Ranking order, force-check, no-match, review idempotency, 19
   bad-input cases, tenant isolation, job retries, failure status + ALERT, idempotent
   re-runs with zero AI calls, cost rows per call, budget stop.
+- `tests/test_audit_fixes.py` (+ the last block of `test_matching_api.py`): one test per
+  gap an external audit found, e.g. shutdown during the last item, force-once retries,
+  hard budget cap, zero vectors, seed resume, the two former 500s, reviewer veto.
 
 ## Cost tracking
 
 Local Ollama costs nothing, so `actual_cost_usd` is always 0. To make the budget guard
 meaningful, each call also gets a `notional_cost_usd`: its real token counts priced at
-configurable reference rates (`NOTIONAL_USD_PER_1M_*` in `.env`). The guard refuses the
-next call when the tenant's notional total reaches `AI_BUDGET_USD`, or when a job hits
+configurable reference rates (`NOTIONAL_USD_PER_1M_*` in `.env`).
+
+The budget is a hard cap. Before each call the guard reserves that call's worst case
+(every token of `OLLAMA_NUM_CTX` at the dearest rate) and refuses the call unless
+spend + reservation fits in `AI_BUDGET_USD`. The check and reservation happen in one
+transaction under a per-tenant lock, so concurrent workers can't overshoot either. After
+the call the reservation is replaced by the real cost; if the real usage is unknown
+(timeout, crash) the reservation stays as an upper bound. A job also stops at
 `AI_MAX_CALLS_PER_JOB`. Failed and invalid calls are recorded too.
 
 ## Limitations
@@ -216,11 +254,19 @@ next call when the tenant's notional total reaches `AI_BUDGET_USD`, or when a jo
   `category: vehicle` with confidence 0.8. That is why blur is also measured locally
   (Laplacian variance) and why the guard requires category and subject agreement,
   not just confidence.
-- **Subject matching is English and head-noun based.** "sea lion" vs "lion" would match
-  on the head noun; multilingual posts are not handled.
+- **Subject matching is English and word-based.** Animals need a species-level match,
+  but for other categories a shared head noun is accepted ("pizza"), which is right for
+  food/vehicles/places in this corpus but could be too loose elsewhere. Multilingual posts
+  are not handled.
 - **Long calls need long timeouts.** A single post analysis reached 4,014 reasoning
   tokens (14 minutes). `OLLAMA_NUM_CTX=8192` and `OLLAMA_TIMEOUT_S=1800` are sized for
-  that; the stale-job threshold (2,400 s) must stay above the timeout.
+  that; the stale-job threshold (2,400 s) must stay above the timeout. The heartbeat is
+  refreshed before every model call, so a live item is never mistaken for a dead one.
+  `docker compose stop` waits 5 minutes for the current item; a call running longer is
+  cut off and the job is picked up again (via the heartbeat) when the worker restarts.
+- **One worker is the tested setup.** Job claiming (`SKIP LOCKED`), heartbeats and the
+  budget lock are safe with several workers, but CPU inference makes more than one
+  worker pointless on this machine, so multi-worker runs weren't exercised.
 - **Ollama runs on the host,** not in Compose, so a fresh machine needs Ollama installed
   and the two models pulled (about 3.4 GB).
 - **Tenancy is by header only.** There is no authentication; this is an internal tool.
@@ -233,7 +279,7 @@ alembic/        migrations 0001-0003
 data/           manifest.csv (source URL, photographer, license) + posts.json; images are downloaded, not committed
 docs/design.md  phase-1 design
 eval/           eval_set.json (labels); results/ is gitignored
-scripts/        download_images.py, seed.py, eval.py
+scripts/        download_images.py, seed.py, eval.py, probes.py (the 6 acceptance probes, with pass/fail)
 tests/          pytest suite
 EVIDENCE.md     pasted proof for every requirement and probe
 BUILDLOG.md     how AI was used, where it was wrong, what was changed
