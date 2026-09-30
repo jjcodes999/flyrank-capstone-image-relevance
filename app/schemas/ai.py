@@ -13,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 Category = Literal["animal", "vehicle", "food", "nature", "person", "object", "other"]
 CATEGORIES: tuple[str, ...] = Category.__args__  # type: ignore[attr-defined]
 
+# lengths are checked *after* trimming, so "     " can't pass as a 5-character caption
 ShortTag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
+Caption = Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=300)]
+Summary = Annotated[str, StringConstraints(strip_whitespace=True, min_length=5, max_length=400)]
 
 _PARENS = re.compile(r"\s*\([^)]*\)")
 
@@ -21,6 +24,14 @@ _PARENS = re.compile(r"\s*\([^)]*\)")
 def _clean_subject(value: str) -> str:
     # "Red fox (Vulpes vulpes)" -> "red fox"; the model sometimes adds a scientific name
     return _PARENS.sub("", value).strip().strip(".").lower()
+
+
+def _strict_number(v: object) -> object:
+    # JSON true/false would otherwise be coerced to 1.0/0.0 (and "0.9" to 0.9): a
+    # malformed confidence must fail validation, not become maximum confidence
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError("confidence must be a JSON number")
+    return v
 
 
 def _dedupe_lower(values: list[str]) -> list[str]:
@@ -38,8 +49,10 @@ class VisionTags(BaseModel):
     subject: str = Field(min_length=1, max_length=60)
     category: Category
     attributes: list[ShortTag] = Field(min_length=1, max_length=10)
-    caption: str = Field(min_length=5, max_length=300)
-    confidence: float = Field(ge=0.0, le=1.0)
+    caption: Caption
+    confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+
+    _numeric_confidence = field_validator("confidence", mode="before")(_strict_number)
 
     @field_validator("subject")
     @classmethod
@@ -54,11 +67,6 @@ class VisionTags(BaseModel):
     def clean_attributes(cls, v: list[str]) -> list[str]:
         return _dedupe_lower(v)
 
-    @field_validator("caption")
-    @classmethod
-    def clean_caption(cls, v: str) -> str:
-        return v.strip()
-
 
 class PostAnalysis(BaseModel):
     """What a post is about, in common words (the post-side twin of VisionTags)."""
@@ -68,8 +76,10 @@ class PostAnalysis(BaseModel):
     subject: str = Field(min_length=1, max_length=60)
     category: Category
     concepts: list[ShortTag] = Field(min_length=1, max_length=10)
-    summary: str = Field(min_length=5, max_length=400)
-    confidence: float = Field(ge=0.0, le=1.0)
+    summary: Summary
+    confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+
+    _numeric_confidence = field_validator("confidence", mode="before")(_strict_number)
 
     @field_validator("subject")
     @classmethod
