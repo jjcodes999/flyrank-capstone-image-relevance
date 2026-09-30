@@ -3,7 +3,6 @@ name: flyrank-imagematch
 # Ollama runs on the host (see README); containers reach it via host.docker.internal.
 x-app: &app
   build: .
-  image: flyrank-image-relevance:local
   env_file:
     - path: .env
       required: false
