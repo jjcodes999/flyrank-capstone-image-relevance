@@ -8,6 +8,8 @@ run: docker compose up -d --build
 seed: docker compose exec api python -m scripts.seed --wait
 test: docker compose exec api pytest -q
 eval: docker compose exec api python -m scripts.eval
+# runs all six probes below, checks each outcome, exits non-zero if any fails
+probes_command: docker compose exec api python -m scripts.probes
 base_url: http://localhost:8000
 
 endpoints:
