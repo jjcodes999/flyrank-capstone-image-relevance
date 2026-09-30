@@ -55,7 +55,8 @@ def score(results: list[PostResult], threshold: float | None) -> dict:
     labeled = [r for r in results if r.correct]
     nomatch = [r for r in results if not r.correct]
     hits = sum(1 for r in labeled if r.suggestion_at(threshold) in r.correct)
-    answered = sum(1 for r in labeled if r.suggestion_at(threshold) is not None)
+    # every emitted suggestion counts, including a wrong answer on a no-match post
+    answered = sum(1 for r in results if r.suggestion_at(threshold) is not None)
     refusals = sum(1 for r in nomatch if r.suggestion_at(threshold) is None)
     return {
         "top1_hits": hits,
