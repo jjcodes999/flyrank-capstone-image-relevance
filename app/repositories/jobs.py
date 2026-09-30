@@ -57,6 +57,10 @@ class JobRepository:
         self.s.flush()
         return job
 
+    def touch(self, job_id: int) -> None:
+        """Refresh a running job's heartbeat (called before every model call)."""
+        self.s.execute(update(Job).where(Job.id == job_id).values(heartbeat_at=utcnow()))
+
     def requeue_stale(self, stale_after_s: float) -> list[int]:
         """Jobs whose worker stopped heartbeating go back to the queue (their items resume)."""
         cutoff = utcnow() - timedelta(seconds=stale_after_s)

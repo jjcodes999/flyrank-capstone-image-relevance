@@ -39,11 +39,9 @@ class FakeCosts:
         self.records: list[dict[str, Any]] = []
         self.budget_calls = budget_calls
 
-    def check_budget(self, ctx) -> None:  # noqa: ANN001
+    def begin(self, ctx, **kw) -> int:  # noqa: ANN001
         if self.budget_calls is not None and len(self.records) >= self.budget_calls:
             raise BudgetExceeded("test budget exhausted")
-
-    def begin(self, ctx, **kw) -> int:  # noqa: ANN001
         self.records.append({**kw, "success": False, "error": "in progress"})
         return len(self.records) - 1
 

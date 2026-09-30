@@ -1,7 +1,7 @@
 """Call a model for JSON and refuse to accept anything that fails the schema.
 
 Loop per attempt:
-  1. budget guard (raises BudgetExceeded before spending anything)
+  1. budget guard + cost row (raises BudgetExceeded before spending anything)
   2. model call; a transport error is recorded as a failed cost row and re-raised so the
      job layer can retry later
   3. Pydantic validation; on failure the cost row is marked failed, the validation error
@@ -11,6 +11,7 @@ After the last invalid attempt we raise InvalidModelOutput. Invalid output is ne
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -53,12 +54,13 @@ def call_structured(
     errors: list[str] = []
     convo = list(messages)
     for attempt in range(1, max_retries + 2):
-        costs.check_budget(ctx)
         cost_id = costs.begin(ctx, operation=operation, model=model, attempt=attempt)
+        started = time.monotonic()
         try:
             res = client.chat_json(model, convo, ollama_schema(schema))
         except OllamaError as exc:
-            costs.finish(cost_id, success=False, error=str(exc))
+            elapsed = int((time.monotonic() - started) * 1000)
+            costs.finish(cost_id, input_tokens=None, duration_ms=elapsed, success=False, error=str(exc))
             raise
         try:
             value = schema.model_validate_json(res.content)
