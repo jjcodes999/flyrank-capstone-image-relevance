@@ -4,6 +4,11 @@ How I used AI on this project, phase by phase. I built it with Claude Code (an A
 agent) doing most of the typing; I set the requirements, stack and constraints, and I
 review and own every line. Entries are short and honest, including the AI's mistakes.
 
+**Writing assistance.** I also used the AI as a writing assistant: the code comments,
+docstrings and all of the documentation (README, `docs/design.md`, EVIDENCE.md and this
+log) were written by the AI from my direction. I decided what they needed to say,
+checked them against the running system, and I stand behind their content.
+
 ## Phase 1 - Design and dataset
 
 - **AI generated:** the first draft of `docs/design.md`, the image picks in
@@ -44,7 +49,7 @@ review and own every line. Entries are short and honest, including the AI's mist
     `OLLAMA_BASE_URL` (host scripts) and `OLLAMA_DOCKER_URL` (containers).
   - It first assumed `think: false` would make `qwen3-vl:4b` fast. Measured: Ollama
     ignores it for this model and every call writes ~300-1,800 hidden thinking tokens
-    (~2-4 min per call on my CPU).
+    ( ~2-4 min per call on my CPU).
   - One generated helper (`job_out`) contained a meaningless `... if False else None`
     line. I removed it in review.
 - **What I checked / decided:**
@@ -95,7 +100,7 @@ review and own every line. Entries are short and honest, including the AI's mist
 
 - **AI generated:** migration 0003 (reviews), the review service and endpoints, the HTML
   review table, `scripts/eval.py` (with the threshold sweep), `scripts/probes.py`, the
-  API/job integration tests, README, capstone.yaml and EVIDENCE.md.
+  API/job integration tests, README and capstone.yaml.
 - **Where it was wrong (found by the real batch run, not by tests):**
   - Post 7 ("deer antlers") came back **empty** after 652 s: 236 prompt + 3,860 hidden
     reasoning tokens = 4,096, exactly Ollama's default context window, so the model
@@ -112,11 +117,10 @@ review and own every line. Entries are short and honest, including the AI's mist
   - Crash recovery and graceful shutdown were exercised on the real run, not only in
     tests: `requeued stale jobs [1] (worker heartbeat lost)` after a kill, and
     `job 1 requeued for shutdown; 4 item(s) already processed` after a normal stop.
-  - **An outage I did not cause, and what it taught me.** Hours into the batch, the API
+  - **An outage happened, and what it taught me.** Hours into the batch, the API
     started returning 500s: `failed to resolve host 'db'`. Docker's event log showed our
-    `db` container was destroyed at 13:58 UTC and replaced by a `postgres:16-alpine`
-    container from a *different* copy of this capstone on the same machine
-    (`Desktop\Capstone\flyrank-capstone-image-relevance`). Compose names a project after
+    `db` container was destroyed and replaced by a `postgres:16-alpine`
+    container from a *different* copy of this capstone on the same machine. Compose names a project after
     its folder, so every copy with this folder name shared one project and could replace
     each other's containers. Fixes: a unique `name: flyrank-imagematch` in
     `docker-compose.yml`; the data volume copied into the renamed project (the foreign
