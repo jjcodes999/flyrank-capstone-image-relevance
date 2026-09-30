@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from datetime import datetime
 from pathlib import Path
 
 from PIL import Image as PILImage
@@ -43,7 +44,10 @@ class ImagePipeline:
             and meta.source_sha256 == image.sha256
         )
 
-    def process(self, tenant_id: int, image_id: int, ctx: CallContext, force: bool) -> str:
+    def process(
+        self, tenant_id: int, image_id: int, ctx: CallContext, force_since: datetime | None = None
+    ) -> str:
+        """Tag + embed one image. With force_since, redo what wasn't already redone since then."""
         image = self.images.get(tenant_id, image_id)
         if image is None:
             raise NotFound(f"image {image_id} not found")
@@ -55,7 +59,9 @@ class ImagePipeline:
         image.sha256 = hashlib.sha256(data).hexdigest()
 
         did_work = False
-        if force or not self.is_current(image):
+        meta_ts = image.meta.updated_at if image.meta is not None else None
+        forced = force_since is not None and not (meta_ts is not None and meta_ts >= force_since)
+        if forced or not self.is_current(image):
             self._tag(image, data, ctx)
             # a vision call takes minutes on CPU: keep its result even if embedding fails,
             # so a retry resumes at the embedding step instead of re-tagging
@@ -66,7 +72,8 @@ class ImagePipeline:
         assert image.meta is not None
         text = image_embedding_text(image.meta)
         current = self.embeddings.get_image(image.id)
-        if force or current is None or current.text != text or current.model != self.settings.embed_model:
+        stale = current is None or current.text != text or current.model != self.settings.embed_model
+        if stale or (force_since is not None and current.created_at < force_since):
             vec, subject_vec = self.embedder.embed_pair(text, image.meta.subject, ctx)
             self.embeddings.upsert_image(tenant_id, image.id, self.settings.embed_model, text, vec, subject_vec)
             did_work = True

@@ -8,6 +8,7 @@ first; the embedding then compares like with like.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -73,13 +74,17 @@ class PostPipeline:
             and post.analysis_source_sha256 == content_sha(post)
         )
 
-    def process(self, tenant_id: int, post_id: int, ctx: CallContext, force: bool) -> str:
+    def process(
+        self, tenant_id: int, post_id: int, ctx: CallContext, force_since: datetime | None = None
+    ) -> str:
+        """Analyse + embed one post. With force_since, redo what wasn't already redone since then."""
         post = self.posts.get(tenant_id, post_id)
         if post is None:
             raise NotFound(f"post {post_id} not found")
         did_work = False
 
-        if force or not self.analysis_is_current(post):
+        forced = force_since is not None and post.updated_at < force_since
+        if forced or not self.analysis_is_current(post):
             result = self.analyzer.analyze(post.title, post.body, ctx)
             a = result.value
             post.subject, post.category, post.concepts, post.summary = a.subject, a.category, a.concepts, a.summary
@@ -87,11 +92,14 @@ class PostPipeline:
             post.analysis_model = self.settings.vision_model
             post.analysis_prompt_version = POST_PROMPT_VERSION
             post.analysis_source_sha256 = content_sha(post)
+            # keep a (slow) analysis even if the embedding call below fails
+            self.s.commit()
             did_work = True
 
         text = post_embedding_text(post)
         current = self.embeddings.get_post(post.id)
-        if force or current is None or current.text != text or current.model != self.settings.embed_model:
+        stale = current is None or current.text != text or current.model != self.settings.embed_model
+        if stale or (force_since is not None and current.created_at < force_since):
             vec, subject_vec = self.embedder.embed_pair(text, post.subject or "", ctx)
             self.embeddings.upsert_post(post.id, self.settings.embed_model, text, vec, subject_vec)
             did_work = True

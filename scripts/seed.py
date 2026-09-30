@@ -132,8 +132,13 @@ def main() -> int:
         tenant_id = tenant.id
 
         print("3/3 queueing batch job ...")
-        job, created = JobService(s).create(tenant_id, "ingest", idempotency_key=seed_key(MANIFEST, POSTS))
+        jobs = JobService(s)
+        job, created = jobs.create(tenant_id, "ingest", idempotency_key=seed_key(MANIFEST, POSTS))
         print(f"  job {job.id} {'created' if created else 'already exists (idempotent re-run)'}: status={job.status}")
+        follow_up, resumed = jobs.resume(tenant_id, job)
+        if resumed:
+            print(f"  job {follow_up.id} created for {follow_up.total} item(s) still pending or failed")
+            job = follow_up
         job_id = job.id
 
     if args.wait:

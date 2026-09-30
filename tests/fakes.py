@@ -11,8 +11,14 @@ from app.errors import BudgetExceeded
 class FakeClient:
     """Returns scripted chat replies in order; an Exception in the script is raised."""
 
-    def __init__(self, replies: list[str | Exception] | None = None, vectors: dict[str, list[float]] | None = None):
+    def __init__(
+        self,
+        replies: list[str | Exception] | None = None,
+        vectors: dict[str, list[float]] | None = None,
+        embed_errors: list[Exception] | None = None,
+    ):
         self.replies = list(replies or [])
+        self.embed_errors = list(embed_errors or [])
         self.vectors = vectors or {}
         self.chat_calls: list[list[dict[str, Any]]] = []
         self.embed_calls: list[list[str]] = []
@@ -26,6 +32,8 @@ class FakeClient:
 
     def embed(self, model: str, texts: list[str]) -> EmbedResult:
         self.embed_calls.append(texts)
+        if self.embed_errors:
+            raise self.embed_errors.pop(0)
         return EmbedResult(
             vectors=[self.vectors.get(t, [1.0] + [0.0] * 383) for t in texts],
             input_tokens=10,

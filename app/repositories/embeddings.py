@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Image, ImageEmbedding, PostEmbedding
@@ -28,6 +28,7 @@ class EmbeddingRepository:
             row = ImageEmbedding(image_id=image_id, tenant_id=tenant_id)
             self.s.add(row)
         row.model, row.text, row.embedding, row.subject_embedding = model, text, vec, subject_vec
+        row.created_at = func.now()  # when this vector was (re)computed
         self.s.flush()
 
     def upsert_post(self, post_id: int, model: str, text: str, vec: list[float], subject_vec: list[float]) -> None:
@@ -36,6 +37,7 @@ class EmbeddingRepository:
             row = PostEmbedding(post_id=post_id)
             self.s.add(row)
         row.model, row.text, row.embedding, row.subject_embedding = model, text, vec, subject_vec
+        row.created_at = func.now()  # when this vector was (re)computed
         self.s.flush()
 
     def get_image(self, image_id: int) -> ImageEmbedding | None:

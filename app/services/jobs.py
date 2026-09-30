@@ -77,6 +77,22 @@ class JobService:
             return existing, False
         return job, True
 
+    def resume(self, tenant_id: int, job: Job) -> tuple[Job, bool]:
+        """After a finished run, queue a follow-up for anything still pending or failed.
+
+        Idempotency keys make a re-run return the old job; this makes sure a re-run still
+        finishes work the old job couldn't (a missing image downloaded later, a failure).
+        """
+        if job.status not in ("succeeded", "failed"):
+            return job, False
+        targets = [("image", i) for i in ImageRepository(self.s).unfinished_ids(tenant_id)]
+        targets += [("post", i) for i in PostRepository(self.s).unfinished_ids(tenant_id)]
+        if not targets:
+            return job, False
+        return self.create(
+            tenant_id, job.kind, idempotency_key=f"{job.idempotency_key}-resume-{job.id}", targets=targets
+        )
+
 
 ItemHandler = Callable[[Session, Job, JobItem, CallContext], str]
 
@@ -99,14 +115,16 @@ class JobRunner:
         self.handlers: dict[str, ItemHandler] = {"image": self._handle_image, "post": self._handle_post}
 
     # --- item handlers -------------------------------------------------------------
+    # force means "redo once in this job": work already redone since the job was created is
+    # kept on a retry, so a failed embedding doesn't trigger another multi-minute vision call
     def _handle_image(self, s: Session, job: Job, item: JobItem, ctx: CallContext) -> str:
         return ImagePipeline(s, self.client, self.costs, self.settings).process(
-            job.tenant_id, item.target_id, ctx, job.force
+            job.tenant_id, item.target_id, ctx, force_since=job.created_at if job.force else None
         )
 
     def _handle_post(self, s: Session, job: Job, item: JobItem, ctx: CallContext) -> str:
         return PostPipeline(s, self.client, self.costs, self.settings).process(
-            job.tenant_id, item.target_id, ctx, job.force
+            job.tenant_id, item.target_id, ctx, force_since=job.created_at if job.force else None
         )
 
     def _mark_target_failed(self, s: Session, job: Job, item: JobItem, error: str) -> None:
@@ -151,6 +169,9 @@ class JobRunner:
                 budget_error = exc.message
                 log.error("job %s: budget guard stopped the job: %s", job_id, exc.message)
 
+        if self.should_stop():  # a stop during the last item's retry: don't finish the job
+            self._requeue(job_id)
+            return
         self._finish(job_id, budget_error)
 
     def _run_item(self, job_id: int, item_id: int) -> None:
@@ -230,6 +251,13 @@ class JobRunner:
             job = s.get(Job, job_id)
             assert job is not None
             repo.refresh_progress(job)
+            counts = repo.item_counts(job.id)
+            unfinished = counts.get("queued", 0) + counts.get("running", 0)
+            if unfinished:  # never report success (or failure) while work is outstanding
+                job.status = "queued"
+                s.commit()
+                log.warning("job %s has %d unfinished item(s); requeued instead of finished", job.id, unfinished)
+                return
             job.finished_at = datetime.now(timezone.utc)
             if job.failed:
                 job.status = "failed"

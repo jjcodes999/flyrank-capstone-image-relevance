@@ -46,6 +46,11 @@ class ImageRepository:
     def ids(self, tenant_id: int) -> list[int]:
         return list(self.s.scalars(select(Image.id).where(Image.tenant_id == tenant_id).order_by(Image.id)))
 
+    def unfinished_ids(self, tenant_id: int) -> list[int]:
+        """Images a finished job left behind: never processed, or failed."""
+        q = select(Image.id).where(Image.tenant_id == tenant_id, Image.status.in_(("pending", "failed")))
+        return list(self.s.scalars(q.order_by(Image.id)))
+
     def status_counts(self, tenant_id: int) -> dict[str, int]:
         rows = self.s.execute(
             select(Image.status, func.count()).where(Image.tenant_id == tenant_id).group_by(Image.status)

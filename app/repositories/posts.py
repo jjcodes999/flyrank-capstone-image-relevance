@@ -25,6 +25,10 @@ class PostRepository:
     def ids(self, tenant_id: int) -> list[int]:
         return list(self.s.scalars(select(Post.id).where(Post.tenant_id == tenant_id).order_by(Post.id)))
 
+    def unfinished_ids(self, tenant_id: int) -> list[int]:
+        q = select(Post.id).where(Post.tenant_id == tenant_id, Post.status.in_(("pending", "failed")))
+        return list(self.s.scalars(q.order_by(Post.id)))
+
     def add(self, post: Post) -> Post:
         self.s.add(post)
         self.s.flush()
