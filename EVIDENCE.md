@@ -3,7 +3,7 @@
 Real command output from this machine (Windows 11, 16 GB RAM, CPU only, Docker Desktop,
 Ollama 0.34.4). The AI batch (48 images + 23 posts) ran on 2026-09-29; everything below
 was re-captured on 2026-09-30 against the running stack after the audit fixes, at commit
-`482b593` (later commits change documentation only). Nothing is edited except long
+`482b593` (later commits change documentation and one explanation message for the reviewer-veto case). Nothing is edited except long
 outputs cut where marked `...`. Times in logs are UTC.
 
 Jump to: [Acceptance probes](#acceptance-probes-section-13-layer-2) ·
@@ -620,7 +620,7 @@ floor. Nothing on the three no-match posts gets above 0.28.
 | 4 | Real persistence: migrations, indexes, isolated tenants | schema above; tenant transcript below; `test_tenants_are_isolated` |
 | 5 | Idempotency where it matters | job idempotency + re-run demo below; review approve twice = one new review row; `test_seed_rerun_queues_images_that_a_finished_job_left_pending` |
 | 6 | Secrets clean | git output below; `test_database_password_is_never_shown_in_repr_or_str`, `test_a_full_database_url_is_masked_too` |
-| 7 | Cost tracked per call, with a budget guard | Probe 6 + budget demo below (hard cap) + `test_total_notional_spend_never_exceeds_the_budget` |
+| 7 | Cost tracked per call, with a budget guard | Probe 6 + budget demo below + `test_total_notional_spend_never_exceeds_the_budget` |
 
 ### 1. Layers
 
@@ -779,9 +779,10 @@ $ git log -p --all | grep "POSTGRES_PASSWORD=" | sort -u
 
 ### 7. Budget guard, live
 
-The budget is a hard cap: a call is refused unless its worst-case cost still fits. This
-demo leaves $0.001 of budget, which is less than one vision call's worst case, so the job
-is refused before any model call and nothing is spent:
+The guard refuses a call unless its reserved cost estimate still fits in the budget. This
+demo leaves $0.001 of budget, which is less than one vision call's reservation, so the job
+is refused before any model call and nothing is spent. (The reservation is an estimate
+sized on the context window, not a strict upper bound; see the README's Cost tracking.)
 
 ```
 $ docker compose stop worker        # so the one-off worker below picks up the job

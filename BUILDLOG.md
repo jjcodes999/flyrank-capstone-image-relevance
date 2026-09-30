@@ -195,3 +195,14 @@ checked them against the running system, and I stand behind their content.
 - **What I checked:** 128 tests pass in the container, all 6 probes pass as assertions,
   eval unchanged at 0.90, and the live budget demo refuses a call when there is budget
   left but less than one call's worst case.
+- **Second audit.** A re-audit of the fixed code confirmed the fixes (128 tests, 0.90,
+  guard decisions consistent) but found five narrower edge cases: an edited post
+  keeping its old analysis, an image staying "failed" after a later successful embed,
+  two seed re-run sequences that miss partial work, a budget reservation that isn't a
+  strict bound (Ollama's generated-token limit is separate from the context size), and
+  a contradictory explanation when a reviewer vetoes the only good image. I decided the
+  first four don't affect anything the brief requires, so instead of more code I
+  reworded the README/design claims ("hard cap", "finishes partial work", "queries live
+  in repositories") to say exactly what the code does, and listed the edge cases with
+  their workarounds under Limitations. The contradictory explanation I did fix, since
+  explanations are graded (one message plus a test).

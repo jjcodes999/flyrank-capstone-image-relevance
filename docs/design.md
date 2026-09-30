@@ -28,7 +28,7 @@ Avoiding a wrong match matters more than always finding a match.
  POST /suggestions/{id}/approve|reject  --> review log                           suggestions
 ```
 
-Code layers (routes use services and repositories; queries live in repositories):
+Code layers (routes use services and repositories; most queries live in repositories):
 
 | Layer | Package | Responsibility |
 |---|---|---|
@@ -144,10 +144,13 @@ noun) and a wolf whose caption said "not a red fox" through, so it was tightened
 - Every vision / analysis / embedding call writes a `cost_records` row (tokens, latency,
   success), created before the call and completed after it. Actual cost is $0 (local
   Ollama); a notional cost at configurable reference rates feeds a **budget guard**. As
-  built, it is a hard cap: each call reserves its worst-case cost first and is refused
-  unless that still fits in `AI_BUDGET_USD` (check + reservation under a per-tenant lock).
+  built, each call reserves an estimated cost (sized on the context window) first and is
+  refused unless that still fits in `AI_BUDGET_USD` (check + reservation under a
+  per-tenant lock). This is not a strict guarantee: the client doesn't cap generated
+  tokens separately, so one unusually long reply could pass the budget slightly.
 - A job never finishes while items are still queued; a re-run of the seed queues a
-  follow-up job for anything left pending or failed.
+  follow-up job for anything left pending or failed (not every partial state; an
+  `ingest` job re-checks everything).
 
 ## 8. API surface (all JSON, tenant from `X-Tenant-ID`, default `demo`)
 

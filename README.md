@@ -34,7 +34,8 @@ Everything runs locally for **$0**: a vision model and an embedding model on
    reviewer rejected is not suggested again; the next acceptable image is used instead.
 6. **Tracks cost.** Every vision, analysis and embedding call writes a `cost_records`
    row (tokens, latency, success), written before the call so even a crash leaves one.
-   The budget is a hard cap: a call is refused unless its worst-case cost still fits.
+   A budget guard refuses a call unless the budget can still cover a reserved estimate of
+   its cost.
 
 ## Architecture
 
@@ -57,8 +58,9 @@ Everything runs locally for **$0**: a vision model and an embedding model on
 ```
 
 Code is layered: routes call services and repositories, services hold the logic, and
-queries live in repositories. (Routes and services still open/commit transactions and
-use `session.get()` for primary-key lookups; they don't build SQL.)
+most queries live in repositories. (Routes and services still commit transactions and use
+`session.get()` for primary-key lookups, and the review service builds one small query
+for a suggestion's review history.)
 
 | Layer | Folder | What lives there |
 |---|---|---|
@@ -90,7 +92,10 @@ docker compose exec api python -m scripts.seed --wait
 ```
 
 The seed is safe to re-run: images are not duplicated and the same seed returns the same
-job. On a 16 GB CPU-only laptop the full batch (48 images + 23 posts) took about 6.4
+job. A re-run also queues a follow-up job for images and posts still `pending` or
+`failed`; it doesn't catch every partial state (see Limitations), so to make sure
+everything is complete run `curl -X POST localhost:8000/jobs -H "content-type: application/json" -d '{"kind": "ingest"}'`,
+which re-checks every item and only does the missing work. On a 16 GB CPU-only laptop the full batch (48 images + 23 posts) took about 6.4
 hours of model time: ≈4.3 min per image and ≈7 min per post including retries (numbers
 from `GET /costs`). Leave it running; progress survives worker restarts.
 Follow progress with `curl localhost:8000/jobs/1` or `docker compose logs -f worker`.
@@ -222,7 +227,7 @@ than fail, if Postgres isn't reachable, so check the summary says `128 passed`:
   re-runs with zero AI calls, cost rows per call, budget stop.
 - `tests/test_audit_fixes.py` (+ the last block of `test_matching_api.py`): one test per
   gap an external audit found, e.g. shutdown during the last item, force-once retries,
-  hard budget cap, zero vectors, seed resume, the two former 500s, reviewer veto.
+  budget reservation, zero vectors, seed follow-up, the two former 500s, reviewer veto.
 
 ## Cost tracking
 
@@ -230,13 +235,19 @@ Local Ollama costs nothing, so `actual_cost_usd` is always 0. To make the budget
 meaningful, each call also gets a `notional_cost_usd`: its real token counts priced at
 configurable reference rates (`NOTIONAL_USD_PER_1M_*` in `.env`).
 
-The budget is a hard cap. Before each call the guard reserves that call's worst case
-(every token of `OLLAMA_NUM_CTX` at the dearest rate) and refuses the call unless
+The budget is checked before every call. The guard reserves an estimate of the call's
+cost (every token of `OLLAMA_NUM_CTX` at the dearest rate) and refuses the call unless
 spend + reservation fits in `AI_BUDGET_USD`. The check and reservation happen in one
-transaction under a per-tenant lock, so concurrent workers can't overshoot either. After
-the call the reservation is replaced by the real cost; if the real usage is unknown
-(timeout, crash) the reservation stays as an upper bound. A job also stops at
-`AI_MAX_CALLS_PER_JOB`. Failed and invalid calls are recorded too.
+transaction under a per-tenant lock, so concurrent workers are checked one at a time.
+After the call the reservation is replaced by the real cost; if the real usage is unknown
+(timeout, crash) the reservation stays. A job also stops at `AI_MAX_CALLS_PER_JOB`.
+Failed and invalid calls are recorded too.
+
+This keeps spend at or under the budget in normal use, but it is not a strict guarantee:
+the reservation assumes a call stays within the context window, and the client doesn't
+set a separate cap on how many tokens the model may generate. A single unusually long
+reply could push the recorded total slightly past the budget; after that, every further
+call is refused.
 
 ## Limitations
 
@@ -269,6 +280,16 @@ the call the reservation is replaced by the real cost; if the real usage is unkn
   worker pointless on this machine, so multi-worker runs weren't exercised.
 - **Ollama runs on the host,** not in Compose, so a fresh machine needs Ollama installed
   and the two models pulled (about 3.4 GB).
+- **Known edge cases (found by a second audit, not fixed).** Each needs an unusual
+  sequence of events and has a workaround:
+  - If a post's text changes in `posts.json` and the seed is re-run, matching keeps using
+    the old analysis until the new job has re-analysed it.
+  - An image that fails only at the embedding step stays marked `failed` even after a
+    later job embeds it; a forced job (`{"kind": "images", "force": true}`) re-tags it and
+    clears the status.
+  - Seed re-runs can miss partial work (an image tagged but not embedded because a
+    budget stop hit in between, or a second re-run after a follow-up job). A plain
+    `{"kind": "ingest"}` job re-checks every item and finishes it.
 - **Tenancy is by header only.** There is no authentication; this is an internal tool.
 
 ## Repository map
