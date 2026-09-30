@@ -90,7 +90,7 @@ class CostTracker:
             if spent + reserve > budget:
                 raise BudgetExceeded(
                     f"AI budget exhausted: notional spend ${spent:.6f} + this call's reserve "
-                    f"${reserve:.6f} would exceed the budget ${budget:.2f}"
+                    f"${reserve:.6f} would exceed the budget ${budget:.6f}"
                 )
             if ctx.job_id is not None:
                 if repo.calls_for_job(ctx.job_id) >= self._settings.ai_max_calls_per_job:
