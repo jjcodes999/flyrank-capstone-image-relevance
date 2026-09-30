@@ -11,6 +11,9 @@ from app.repositories.tenants import TenantRepository
 
 DB = Annotated[Session, Depends(get_db)]
 
+# pagination offsets beyond this are rejected with 422 (PostgreSQL can't take huge ints)
+MAX_OFFSET = 100_000
+
 
 def get_tenant(
     db: DB,

@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path, Query
 
-from app.api.deps import DB, CurrentTenant
+from app.api.deps import MAX_OFFSET, DB, CurrentTenant
 from app.errors import NotFound
 from app.models import IMAGE_STATUSES
 from app.repositories.images import ImageRepository
@@ -22,7 +22,7 @@ def list_images(
     needs_review: bool | None = None,
     category: Category | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> ImageList:
     repo = ImageRepository(db)
     items = repo.list(

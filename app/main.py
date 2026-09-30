@@ -6,7 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import DataError, IntegrityError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.ai.ollama import OllamaClient
@@ -56,6 +56,14 @@ def create_app() -> FastAPI:
         log.warning("integrity error: %s", exc.orig)
         return JSONResponse(status_code=409, content=error_body("conflict", "the request conflicts with existing data"))
 
+    @app.exception_handler(DataError)
+    async def data_error(_: Request, exc: DataError) -> JSONResponse:
+        # a value the database can't store/compare: the request was bad, not the server
+        log.warning("data error: %s", exc.orig.__class__.__name__ if exc.orig else exc)
+        return JSONResponse(
+            status_code=422, content=error_body("invalid_value", "a value in the request is not acceptable")
+        )
+
     @app.exception_handler(OperationalError)
     async def database_unavailable(_: Request, exc: OperationalError) -> JSONResponse:
         # the database is down or unreachable: a clean, retryable 503 instead of a 500
@@ -74,12 +82,23 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     def health(db: DB) -> dict:
+        """ok = database up, Ollama reachable and both models pulled; otherwise degraded.
+
+        The API itself keeps serving when Ollama is down (only the worker needs it)."""
         db.execute(text("SELECT 1"))
-        ollama_ok = OllamaClient(settings.ollama_base_url, 3).ping()
+        installed = OllamaClient(settings.ollama_base_url, 3).installed_models()
+        names = set(installed or []) | {n.removesuffix(":latest") for n in installed or []}
+        missing = [m for m in (settings.vision_model, settings.embed_model) if m not in names]
+        if installed is None:
+            ollama = "unreachable"
+        elif missing:
+            ollama = "missing models: " + ", ".join(missing)
+        else:
+            ollama = "ok"
         return {
-            "status": "ok",
+            "status": "ok" if ollama == "ok" else "degraded",
             "database": "ok",
-            "ollama": "ok" if ollama_ok else "unreachable",
+            "ollama": ollama,
             "vision_model": settings.vision_model,
             "embed_model": settings.embed_model,
         }

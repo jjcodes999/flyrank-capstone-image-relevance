@@ -92,8 +92,12 @@ class OllamaClient:
             model=model,
         )
 
-    def ping(self) -> bool:
+    def installed_models(self) -> list[str] | None:
+        """Names of the models Ollama has pulled, or None if Ollama is unreachable."""
         try:
-            return self._http.get("/api/tags", timeout=3).status_code == 200
-        except httpx.HTTPError:
-            return False
+            resp = self._http.get("/api/tags", timeout=3)
+            if resp.status_code != 200:
+                return None
+            return [m.get("name", "") for m in resp.json().get("models", [])]
+        except (httpx.HTTPError, ValueError):
+            return None

@@ -4,11 +4,18 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ORM(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+def no_nul(value: str | None) -> str | None:
+    """PostgreSQL text can't hold NUL characters: reject them as bad input (422)."""
+    if value is not None and "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
 
 
 # --- images -----------------------------------------------------------------------
@@ -131,6 +138,8 @@ class PostCreate(BaseModel):
     title: str = Field(min_length=3, max_length=300)
     body: str = Field(min_length=20, max_length=20000)
 
+    _no_nul = field_validator("title", "body")(no_nul)
+
 
 class PostOut(ORM):
     id: int
@@ -202,6 +211,8 @@ class ReviewIn(BaseModel):
 
     reviewer: str = Field(default="editor", min_length=1, max_length=100)
     note: str | None = Field(default=None, max_length=2000)
+
+    _no_nul = field_validator("reviewer", "note")(no_nul)
 
 
 class ReviewOut(ORM):

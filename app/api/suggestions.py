@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Path, Query
 from fastapi.responses import HTMLResponse
 
-from app.api.deps import DB, CurrentTenant
+from app.api.deps import MAX_OFFSET, DB, CurrentTenant
 from app.errors import NotFound
 from app.models import Suggestion
 from app.repositories.suggestions import SuggestionRepository
@@ -54,7 +54,7 @@ def list_suggestions(
     review_status: ReviewStatus | None = None,
     decision: Literal["accepted", "rejected"] | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> list[SuggestionOut]:
     rows = SuggestionRepository(db).list(
         tenant.id, post_id=post_id, review_status=review_status, decision=decision, limit=limit, offset=offset

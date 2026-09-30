@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import DB, CurrentTenant
+from app.api.deps import MAX_OFFSET, DB, CurrentTenant
 from app.config import get_settings
 from app.repositories.costs import CostRepository
 from app.schemas.api import CostLine, CostRecordOut, CostSummary
@@ -41,7 +41,7 @@ def cost_records(
     target_type: Literal["image", "post"] | None = None,
     target_id: Annotated[int | None, Query(ge=1)] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> list[CostRecordOut]:
     rows = CostRepository(db).list(
         tenant.id,

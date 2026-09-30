@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Path, Query, status
 
-from app.api.deps import DB, CurrentTenant
+from app.api.deps import MAX_OFFSET, DB, CurrentTenant
 from app.config import get_settings
 from app.errors import Conflict, NotFound
 from app.models import POST_STATUSES, Post
@@ -53,8 +53,9 @@ def create_post(db: DB, tenant: CurrentTenant, body: PostCreate) -> PostCreated:
     repo = PostRepository(db)
     if repo.get_by_slug(tenant.id, body.slug) is not None:
         raise Conflict(f"a post with slug '{body.slug}' already exists")
+    # add() only flushes; JobService.create commits the post and its job together, so a
+    # failure can't leave a post that no job will ever analyse
     post = repo.add(Post(tenant_id=tenant.id, slug=body.slug, title=body.title, body=body.body))
-    db.commit()
     job, _ = JobService(db).create(
         tenant.id, "posts", idempotency_key=f"post-{post.id}-created", targets=[("post", post.id)]
     )
@@ -67,7 +68,7 @@ def list_posts(
     tenant: CurrentTenant,
     status: PostStatus | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_OFFSET)] = 0,
 ) -> list[PostOut]:
     return [PostOut.model_validate(p) for p in PostRepository(db).list(tenant.id, status, limit, offset)]
 
