@@ -250,3 +250,93 @@ def test_database_outage_is_a_clean_503_not_a_500(monkeypatch):
         r = c.get("/images")
     assert r.status_code == 503
     assert r.json()["error"]["code"] == "database_unavailable"
+
+
+# --- audit regressions: these used to return 500 or give the wrong answer ----------------
+@pytest.mark.parametrize(
+    "method, path, kwargs",
+    [
+        ("get", "/images?offset=" + "9" * 101, {}),
+        ("get", "/posts?offset=100001", {}),
+        ("get", "/suggestions?offset=" + "9" * 30, {}),
+        ("get", "/costs/records?offset=" + "9" * 30, {}),
+        ("post", "/posts", {"json": {"slug": "nul-title", "title": "Fox\u0000es", "body": "A post body that is long enough."}}),
+        ("post", "/suggestions/1/reject", {"json": {"note": "bad\u0000note"}}),
+    ],
+)
+def test_inputs_postgres_cannot_store_are_422_not_500(client, world, method, path, kwargs):
+    r = getattr(client, method)(path, **kwargs)
+    assert r.status_code == 422, r.text
+
+
+def test_a_pair_rejected_by_a_reviewer_is_not_suggested_again(client, world):
+    first = client.get(f"/posts/{world['fox_post']}/images").json()
+    assert first["suggestion"]["filename"] == "fox.jpg"
+    client.post(f"/suggestions/{first['suggestion']['suggestion_id']}/reject", json={"note": "wrong fox"})
+    again = client.get(f"/posts/{world['fox_post']}/images").json()
+    assert again["status"] == "no_confident_match"
+    assert any("rejected by a reviewer: fox.jpg" in r for r in again["reasons"])
+
+
+def test_a_failed_image_is_never_recommended(client, world, sessions):
+    with sessions() as s:
+        s.get(Image, world["fox"]).status = "failed"
+        s.commit()
+    body = client.get(f"/posts/{world['fox_post']}/images").json()
+    assert "fox.jpg" not in [c["filename"] for c in body["candidates"]]
+    assert body["suggestion"] is None or body["suggestion"]["filename"] != "fox.jpg"
+
+
+def test_an_embedding_that_no_longer_matches_the_tags_is_not_ready(client, world, sessions):
+    with sessions() as s:  # tags were re-done but the vector is from the old tags
+        s.get(ImageMetadata, world["fox"]).caption = "A different caption after re-tagging."
+        s.commit()
+    body = client.get(f"/posts/{world['fox_post']}/images").json()
+    fox = next(c for c in body["candidates"] if c["filename"] == "fox.jpg")
+    assert fox["decision"] == "rejected" and fox["reasons"] == ["Image has not been analysed yet"]
+
+
+def test_a_zero_vector_in_the_database_does_not_break_matching(client, world, sessions):
+    with sessions() as s:
+        emb = s.query(ImageEmbedding).filter_by(image_id=world["dog"]).one()
+        emb.embedding = [0.0] * DIM
+        s.commit()
+    r = client.get(f"/posts/{world['fox_post']}/images")
+    assert r.status_code == 200
+    assert "dog.jpg" not in [c["filename"] for c in r.json()["candidates"]]
+
+
+def test_post_and_its_job_are_created_together(client, world, monkeypatch):
+    from app.services import jobs as jobs_module
+
+    real_create = jobs_module.JobService.create
+    calls = {"n": 0}
+
+    def flaky_create(self, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("queue unavailable")
+        return real_create(self, *a, **kw)
+
+    monkeypatch.setattr(jobs_module.JobService, "create", flaky_create)
+    body = {"slug": "arctic-foxes", "title": "Arctic foxes", "body": "White foxes of the tundra " * 3}
+    assert client.post("/posts", json=body).status_code == 500  # the queue really failed
+    retry = client.post("/posts", json=body)  # no orphan post was left behind, so this works
+    assert retry.status_code == 201
+
+
+@pytest.mark.parametrize(
+    "installed, ollama",
+    [
+        (None, "unreachable"),
+        (["all-minilm:latest"], "missing models: qwen3-vl:4b"),
+        (["qwen3-vl:4b", "all-minilm:latest"], "ok"),
+    ],
+)
+def test_health_reports_degraded_when_ollama_or_a_model_is_missing(client, world, monkeypatch, installed, ollama):
+    from app.ai import ollama as ollama_module
+
+    monkeypatch.setattr(ollama_module.OllamaClient, "installed_models", lambda self: installed)
+    body = client.get("/health").json()
+    assert body["ollama"] == ollama
+    assert body["status"] == ("ok" if ollama == "ok" else "degraded")
