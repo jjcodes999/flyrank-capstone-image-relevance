@@ -95,7 +95,7 @@ def test_all_failures_are_listed():
     bad = image(subject="gray wolf", caption="A wolf.", attributes=("fur",), confidence=0.2, needs_review=True)
     v = evaluate(FOX_POST, bad, Scores(similarity=0.2, subject_similarity=0.5), CFG)
     assert len(v.reasons) == 3  # confidence, subject, similarity
-    assert [c.name for c in v.checks] == ["ready", "confidence", "category", "subject", "similarity"]
+    assert [c.name for c in v.checks] == ["ready", "post", "confidence", "category", "subject", "similarity"]
 
 
 def test_threshold_boundary_is_inclusive():
@@ -103,25 +103,77 @@ def test_threshold_boundary_is_inclusive():
 
 
 # --- subject matching ---------------------------------------------------------------
+# subject similarities below are real all-minilm scores where we measured them
 @pytest.mark.parametrize(
-    "post_subject, img, expected",
+    "post_subject, img, ssim, expected",
     [
-        ("red fox", image(subject="fox"), True),  # same head noun
-        ("foxes", image(subject="red fox"), True),  # plural
-        ("dog", image(subject="golden retriever", caption="A golden retriever dog."), True),  # in caption
-        ("sushi", image(subject="sushi roll", category="food", caption="Sushi rolls."), True),
-        ("red fox", image(subject="gray wolf", caption="A gray wolf."), False),
-        ("red fox", image(subject="coyote", caption="A coyote in a field."), False),
-        ("gray wolf", image(subject="siberian husky", caption="A husky dog on a dark background."), False),
+        ("red fox", image(subject="red fox"), 1.0, True),  # same species
+        ("red foxes", image(subject="red fox"), 0.95, True),  # plural of the same name
+        ("red fox", image(subject="fox"), 0.83, True),  # animals: close subject embeddings
+        ("red fox", image(subject="gray wolf"), 0.53, False),
+        ("red fox", image(subject="coyote"), 0.51, False),
+        ("gray wolf", image(subject="siberian husky"), 0.50, False),
+        ("neapolitan pizza", image(subject="margherita pizza", category="food"), 0.56, True),  # head noun
+        ("sushi", image(subject="sushi roll", category="food"), 0.86, True),
+        ("tropical beach", image(subject="beach", category="nature"), 0.80, True),
+        ("bicycle", image(subject="motorcycle", category="vehicle"), 0.68, False),
     ],
 )
-def test_subject_match(post_subject, img, expected):
-    matched, _ = subject_match(post_subject, img, subject_similarity=0.5, threshold=0.8)
+def test_subject_match(post_subject, img, ssim, expected):
+    matched, _ = subject_match(post_subject, img, subject_similarity=ssim, threshold=0.8)
     assert matched is expected
 
 
+# --- counterexamples from the external audit: a shared word must not pass another animal
+@pytest.mark.parametrize(
+    "post_subject, img, ssim",
+    [
+        ("red fox", image(subject="arctic fox", caption="An arctic fox on snow."), 0.73),
+        ("sea lion", image(subject="lion", caption="A lion on the savannah."), 0.30),
+        ("red fox", image(subject="gray wolf", caption="A gray wolf, not a red fox, in a forest."), 0.30),
+        ("dog", image(subject="golden retriever", caption="A golden retriever dog."), 0.59),
+    ],
+)
+def test_other_animals_sharing_a_word_are_rejected(post_subject, img, ssim):
+    post = PostFacts(subject=post_subject, category="animal")
+    v = evaluate(post, img, Scores(similarity=0.75, subject_similarity=ssim), CFG)
+    assert not v.accepted
+    assert v.check("subject").passed is False
+    assert f"expected {post_subject}, detected {img.subject}" in v.reasons[0]
+
+
+def test_the_caption_text_is_never_used_to_match_a_subject():
+    wolf = image(subject="gray wolf", category="nature", caption="Not a waterfall at all.")
+    matched, _ = subject_match("waterfall", wolf, subject_similarity=0.2, threshold=0.8)
+    assert matched is False
+
+
+def test_uncertain_post_analysis_is_refused():
+    post = PostFacts(subject="red fox", category="animal", confidence=0.01)
+    v = evaluate(post, FOX, Scores(similarity=0.9, subject_similarity=1.0), CFG)
+    assert not v.accepted and v.check("post").passed is False
+    assert v.reasons[0] == "Post analysis is uncertain (0.01 < 0.60); its subject needs review"
+
+
+@pytest.mark.parametrize("subject", ["none", "unknown", "", None])
+def test_post_without_a_visual_subject_is_refused_not_waved_through(subject):
+    v = evaluate(PostFacts(subject=subject, category="animal", confidence=0.9), FOX,
+                 Scores(similarity=0.9, subject_similarity=1.0), CFG)
+    assert not v.accepted
+    assert v.reasons[0].startswith("Post has no identifiable visual subject")
+
+
+def test_no_match_reasons_report_an_uncertain_post_first():
+    post = PostFacts(subject="red fox", category="animal", confidence=0.2)
+    verdicts = [(FOX, s, evaluate(post, FOX, s, CFG)) for s in [Scores(0.9, 1.0)]]
+    reasons = no_match_reasons(post, verdicts, CFG)
+    assert reasons[0] == "None of the 1 closest images passed every guard check"
+    assert reasons[1].startswith("Post analysis is uncertain")
+
+
 def test_subject_embedding_similarity_can_match_synonyms():
-    matched, how = subject_match("hamburger", image(subject="cheeseburger", caption="A burger."), 0.86, 0.8)
+    burger = image(subject="cheeseburger", category="food", caption="A burger.")
+    matched, how = subject_match("hamburger", burger, 0.86, 0.8)
     assert matched and "0.86" in how
 
 
@@ -140,8 +192,9 @@ def test_no_match_reasons_cover_threshold_and_subject():
     ]
     assert not any(v.accepted for _, _, v in verdicts)
     reasons = no_match_reasons(post, verdicts, CFG)
-    assert reasons[0].startswith("Similarity below threshold") and "0.31" in reasons[0]
-    assert reasons[1].startswith("Subjects don't match: no candidate shows 'parrot'")
+    assert reasons[0] == "None of the 2 closest images passed every guard check"
+    assert reasons[1].startswith("Similarity below threshold") and "0.31" in reasons[1]
+    assert reasons[2].startswith("Subjects don't match: no candidate shows 'parrot'")
 
 
 def test_no_match_with_empty_library():

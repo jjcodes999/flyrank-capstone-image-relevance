@@ -3,11 +3,12 @@
 Pure functions only (no database, no model calls) so every rule is unit-tested.
 All checks always run, so a rejection lists every reason, not just the first one.
 
-    1 ready       - image has validated tags and an embedding
-    2 confidence  - classification confidence >= MIN_CONFIDENCE and not flagged for review
-    3 category    - post category == image category
-    4 subject     - the image shows the post's subject (see subject_match)
-    5 similarity  - cosine(post, image) >= SIMILARITY_THRESHOLD
+    1 ready       - image has current validated tags and an embedding, and is not failed
+    2 post        - the post analysis is confident and names a visual subject
+    3 confidence  - classification confidence >= MIN_CONFIDENCE and not flagged for review
+    4 category    - post category == image category
+    5 subject     - the image shows the post's subject (see subject_match)
+    6 similarity  - cosine(post, image) >= SIMILARITY_THRESHOLD
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass, field
 
-GUARD_VERSION = "g1"
+GUARD_VERSION = "g2"
 NO_SUBJECT = {"none", "unknown", "n/a", ""}
 
 
@@ -30,6 +31,7 @@ class GuardConfig:
 class PostFacts:
     subject: str | None
     category: str | None
+    confidence: float | None = None  # post-analysis confidence; None = given by a human
 
 
 @dataclass(frozen=True)
@@ -75,7 +77,8 @@ class Verdict:
         return [asdict(c) for c in self.checks]
 
     def check(self, name: str) -> Check:
-        return next(c for c in self.checks if c.name == name)
+        """A named check; one that never ran (e.g. after 'ready' failed) counts as failed."""
+        return next((c for c in self.checks if c.name == name), Check(name, False, "not evaluated"))
 
 
 # --- subject matching -----------------------------------------------------------------
@@ -105,21 +108,39 @@ def _contains_phrase(haystack: list[str], needle: list[str]) -> bool:
 
 
 def subject_match(
-    post_subject: str, image: ImageFacts, subject_similarity: float | None, threshold: float
+    post_subject: str,
+    image: ImageFacts,
+    subject_similarity: float | None,
+    threshold: float,
 ) -> tuple[bool, str]:
-    """Does the image show what the post is about? Returns (matched, how/why)."""
+    """Does the image show what the post is about? Returns (matched, how/why).
+
+    Animals are matched at species level: the names must be the same, or the subject
+    embeddings must be close (>= threshold). A shared last word is not enough there:
+    "red fox" vs "arctic fox" or "sea lion" vs "lion" are different animals.
+    Other categories may also match on the head noun ("margherita pizza" is a pizza) or
+    on the post subject appearing in the image's subject/tags. The free-text caption is
+    never used, so a caption like "a wolf, not a red fox" can't sneak a wolf through.
+    """
     post_words = normalize(post_subject)
     img_words = normalize(image.subject)
     if not post_words or not img_words:
         return False, "missing subject"
+    if post_words == img_words:
+        return True, f"same subject ('{' '.join(post_words)}')"
+    close = subject_similarity is not None and subject_similarity >= threshold
+    sim = f"{subject_similarity:.2f}" if subject_similarity is not None else "n/a"
+    if image.category == "animal":
+        if close:
+            return True, f"same species: subject embeddings are close ({sim} >= {threshold:.2f})"
+        return False, f"'{image.subject}' is a different animal from '{post_subject}' (subject similarity {sim})"
     if post_words[-1] == img_words[-1]:
         return True, f"same kind of subject ('{post_words[-1]}')"
-    image_text = normalize(" ".join([image.subject or "", image.caption, *image.attributes]))
-    if _contains_phrase(image_text, post_words):
-        return True, f"'{post_subject}' appears in the image description"
-    if subject_similarity is not None and subject_similarity >= threshold:
-        return True, f"subject embeddings are close ({subject_similarity:.2f} >= {threshold:.2f})"
-    sim = f"{subject_similarity:.2f}" if subject_similarity is not None else "n/a"
+    tag_words = normalize(" ".join([image.subject or "", *image.attributes]))
+    if _contains_phrase(tag_words, post_words):
+        return True, f"'{post_subject}' appears in the image's tags"
+    if close:
+        return True, f"subject embeddings are close ({sim} >= {threshold:.2f})"
     return False, f"'{image.subject}' is not '{post_subject}' (subject similarity {sim})"
 
 
@@ -135,7 +156,23 @@ def evaluate(post: PostFacts, image: ImageFacts, scores: Scores, cfg: GuardConfi
         return Verdict(False, checks, reasons, "Rejected: " + reasons[0])
     checks.append(Check("ready", True, "image has validated tags and an embedding"))
 
-    # 2 confidence (a flagged image is never recommended)
+    # 2 post: an uncertain or subject-less post analysis can't define what to look for
+    has_subject = bool(post.subject) and post.subject.strip().lower() not in NO_SUBJECT
+    post_conf_ok = post.confidence is None or post.confidence >= cfg.min_confidence
+    if not has_subject:
+        checks.append(Check("post", False, "post analysis found no visual subject"))
+        reasons.append("Post has no identifiable visual subject; it needs a human to pick the image")
+    elif not post_conf_ok:
+        checks.append(Check("post", False, "post analysis is uncertain", post.confidence, cfg.min_confidence))
+        reasons.append(
+            f"Post analysis is uncertain ({post.confidence:.2f} < {cfg.min_confidence:.2f}); "
+            "its subject needs review"
+        )
+    else:
+        detail = "subject given" if post.confidence is None else f"confidence {post.confidence:.2f}"
+        checks.append(Check("post", True, detail, post.confidence, cfg.min_confidence))
+
+    # 3 confidence (a flagged image is never recommended)
     conf_ok = image.confidence >= cfg.min_confidence and not image.needs_review
     if conf_ok:
         detail = f"confidence {image.confidence:.2f} >= {cfg.min_confidence:.2f}"
@@ -145,7 +182,7 @@ def evaluate(post: PostFacts, image: ImageFacts, scores: Scores, cfg: GuardConfi
         reasons.append(f"Low-confidence image ({image.confidence:.2f}): flagged for review ({why})")
     checks.append(Check("confidence", conf_ok, detail, image.confidence, cfg.min_confidence))
 
-    # 3 category
+    # 4 category
     category_ok = not post.category or post.category == image.category
     if category_ok:
         checks.append(Check("category", True, f"both are '{image.category}'"))
@@ -153,9 +190,9 @@ def evaluate(post: PostFacts, image: ImageFacts, scores: Scores, cfg: GuardConfi
         checks.append(Check("category", False, f"post is '{post.category}', image is '{image.category}'"))
         reasons.append(f"Category mismatch: post is about {post.category}, image shows {image.category}")
 
-    # 4 subject (only meaningful inside the same category)
-    if not post.subject or post.subject.strip().lower() in NO_SUBJECT:
-        checks.append(Check("subject", True, "post has no specific subject; not checked"))
+    # 5 subject (only meaningful inside the same category)
+    if not has_subject:
+        checks.append(Check("subject", False, "not compared: post has no subject"))
     elif not category_ok:
         checks.append(Check("subject", False, "not compared: categories differ", scores.subject_similarity))
     else:
@@ -165,7 +202,7 @@ def evaluate(post: PostFacts, image: ImageFacts, scores: Scores, cfg: GuardConfi
             label = (image.category or "subject").capitalize()
             reasons.append(f"{label} category mismatch: expected {post.subject}, detected {image.subject}")
 
-    # 5 similarity
+    # 6 similarity (NaN from a broken vector never passes)
     sim_ok = scores.similarity >= cfg.similarity_threshold
     checks.append(
         Check(
@@ -195,7 +232,11 @@ def no_match_reasons(post: PostFacts, verdicts: list[tuple[ImageFacts, Scores, V
     """Why nothing cleared the bar, summarised across the ranked candidates."""
     if not verdicts:
         return ["No analysed images are available to match against"]
-    reasons: list[str] = []
+    reasons: list[str] = [f"None of the {len(verdicts)} closest images passed every guard check"]
+    post_check = verdicts[0][2].check("post")
+    if not post_check.passed:
+        reasons.append(verdicts[0][2].reasons[0])
+        return reasons
     best_image, best_scores, _ = max(verdicts, key=lambda v: v[1].similarity)
     if best_scores.similarity < cfg.similarity_threshold:
         reasons.append(
@@ -214,6 +255,6 @@ def no_match_reasons(post: PostFacts, verdicts: list[tuple[ImageFacts, Scores, V
         reasons.append(
             f"{len(flagged)} candidate(s) with the right subject are flagged low-confidence and need review"
         )
-    if not reasons:  # every candidate failed a mix of checks
+    if len(reasons) == 1:  # every candidate failed a mix of checks
         reasons.append("Every candidate failed at least one guard check (see candidates for details)")
     return reasons
